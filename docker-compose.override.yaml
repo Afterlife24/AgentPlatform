@@ -1,0 +1,32 @@
+# Local-only additions on top of docker-compose.yaml.
+#
+# Docker Compose auto-loads this file alongside docker-compose.yaml — no -f
+# flag needed. Anything here is layered on top of the base file: new services
+# are added, and any key that also exists in the base file gets overridden.
+#
+# WHY THIS FILE EXISTS:
+# docker-compose.yaml is a clean mirror of the official Dograh repo (upstream).
+# We never edit it directly, so `git fetch upstream && git merge upstream/main`
+# stays conflict-free. All Windows/local-only customizations live here instead,
+# in a file upstream doesn't know about and will never touch.
+#
+# This currently adds one thing: an nginx reverse proxy on port 3000 that
+# correctly routes both HTTP and WebSocket traffic to the ui/api containers.
+# See LOCAL_SETUP.md for why this is needed (WebSockets don't route correctly
+# through port 3010 directly).
+
+services:
+  nginx-local:
+    image: nginx:alpine
+    container_name: nginx_local
+    depends_on:
+      ui:
+        condition: service_started
+      api:
+        condition: service_healthy
+    ports:
+      - "3000:80"
+    volumes:
+      - ./nginx-local.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - app-network
