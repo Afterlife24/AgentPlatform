@@ -8,6 +8,7 @@ This module tests:
 """
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Dict
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -21,13 +22,16 @@ from pipecat.frames.frames import (
     LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
+    UserTurnInferenceCompletedFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.services.llm_service import FunctionCallParams
 
+from api.enums import WorkflowRunMode
 from api.services.workflow.pipecat_engine_custom_tools import get_function_schema
 from api.services.workflow.tools.custom_tool import (
+    _coerce_parameter_value,
     execute_http_tool,
     tool_to_function_schema,
 )
@@ -139,6 +143,51 @@ class TestToolToFunctionSchema:
         assert "customer_name" in required
         assert "duration_minutes" in required
         assert "is_priority" not in required
+
+    def test_tool_with_object_and_array_parameters(self):
+        """Test converting a tool with object and array parameters."""
+        tool = MockToolModel(
+            tool_uuid="test-uuid-nested",
+            name="Create Booking",
+            description="Create a booking with nested details",
+            category="http_api",
+            definition={
+                "schema_version": 1,
+                "type": "http_api",
+                "config": {
+                    "method": "POST",
+                    "url": "https://api.example.com/bookings",
+                    "parameters": [
+                        {
+                            "name": "booking",
+                            "type": "object",
+                            "description": "Nested booking payload",
+                            "required": True,
+                        },
+                        {
+                            "name": "attendees",
+                            "type": "array",
+                            "description": "Booking attendees",
+                            "required": False,
+                        },
+                    ],
+                },
+            },
+        )
+
+        schema = tool_to_function_schema(tool)
+
+        props = schema["function"]["parameters"]["properties"]
+        assert props["booking"] == {
+            "type": "object",
+            "additionalProperties": True,
+            "description": "Nested booking payload",
+        }
+        assert props["attendees"] == {
+            "type": "array",
+            "items": {},
+            "description": "Booking attendees",
+        }
 
     def test_preset_parameters_are_not_exposed_to_llm_schema(self):
         """Test that preset parameters are injected at runtime, not shown to the LLM."""
@@ -293,6 +342,51 @@ class TestExecuteHttpTool:
             assert result["status"] == "success"
             assert result["status_code"] == 201
             assert result["data"]["id"] == 123
+
+    @pytest.mark.asyncio
+    async def test_post_request_sends_nested_json_body(self):
+        """Test that POST requests preserve nested arguments in the JSON body."""
+        tool = MockToolModel(
+            tool_uuid="test-uuid-nested",
+            name="Create Booking",
+            description="Create a nested booking",
+            category="http_api",
+            definition={
+                "schema_version": 1,
+                "type": "http_api",
+                "config": {
+                    "method": "POST",
+                    "url": "https://api.example.com/bookings",
+                    "timeout_ms": 5000,
+                },
+            },
+        )
+
+        arguments = {
+            "booking": {
+                "start": "2026-05-28T10:00:00Z",
+                "attendee": {"name": "Jane", "email": "jane@example.com"},
+                "metadata": {"source": "voice"},
+            }
+        }
+
+        with patch(
+            "api.services.workflow.tools.custom_tool.httpx.AsyncClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"bookingId": "booking-123"}
+            mock_client.request.return_value = mock_response
+            mock_client_class.return_value.__aenter__.return_value = mock_client
+
+            result = await execute_http_tool(tool, arguments)
+
+            call_kwargs = mock_client.request.call_args.kwargs
+            assert call_kwargs["json"] == arguments
+            assert isinstance(call_kwargs["json"]["booking"], dict)
+            assert isinstance(call_kwargs["json"]["booking"]["attendee"], dict)
+            assert result["status"] == "success"
 
     @pytest.mark.asyncio
     async def test_post_request_injects_preset_parameters(self):
@@ -468,7 +562,7 @@ class TestExecuteHttpTool:
             mock_client.request.return_value = mock_response
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            result = await execute_http_tool(tool, arguments)
+            await execute_http_tool(tool, arguments)
 
             call_kwargs = mock_client.request.call_args.kwargs
             assert call_kwargs["method"] == "DELETE"
@@ -639,6 +733,51 @@ class TestExecuteHttpTool:
                 mock_db.get_credential_by_uuid.assert_not_called()
 
 
+class TestCoerceParameterValue:
+    """Tests for _coerce_parameter_value function."""
+
+    def test_object_value_returns_dict_unchanged(self):
+        """Test that object parameters preserve dict values."""
+        value = {"attendee": {"name": "Jane"}}
+
+        assert _coerce_parameter_value(value, "object") is value
+
+    def test_object_value_parses_json_string(self):
+        """Test that object parameters parse JSON string values."""
+        value = '{"attendee": {"name": "Jane"}}'
+
+        assert _coerce_parameter_value(value, "object") == {
+            "attendee": {"name": "Jane"}
+        }
+
+    def test_array_value_returns_list_unchanged(self):
+        """Test that array parameters preserve list values."""
+        value = [{"name": "Jane"}, {"name": "Sam"}]
+
+        assert _coerce_parameter_value(value, "array") is value
+
+    def test_array_value_parses_json_string(self):
+        """Test that array parameters parse JSON string values."""
+        value = '[{"name": "Jane"}, {"name": "Sam"}]'
+
+        assert _coerce_parameter_value(value, "array") == [
+            {"name": "Jane"},
+            {"name": "Sam"},
+        ]
+
+    @pytest.mark.parametrize("value", ["not json", "[]", "null"])
+    def test_object_value_rejects_invalid_or_wrong_shape(self, value):
+        """Test that object parameters require a JSON object."""
+        with pytest.raises(ValueError, match="Cannot convert"):
+            _coerce_parameter_value(value, "object")
+
+    @pytest.mark.parametrize("value", ["not json", "{}", "null"])
+    def test_array_value_rejects_invalid_or_wrong_shape(self, value):
+        """Test that array parameters require a JSON array."""
+        with pytest.raises(ValueError, match="Cannot convert"):
+            _coerce_parameter_value(value, "array")
+
+
 class TestAuthHeaders:
     """Tests for auth header building utilities."""
 
@@ -793,6 +932,7 @@ class TestCustomToolManagerIntegration:
             expected_down_frames=[
                 LLMFullResponseStartFrame,
                 FunctionCallsFromLLMInfoFrame,
+                UserTurnInferenceCompletedFrame,
                 FunctionCallsStartedFrame,
                 LLMFullResponseEndFrame,
                 FunctionCallInProgressFrame,
@@ -1018,6 +1158,186 @@ class TestCustomToolManagerUnit:
 
             # Verify result was returned
             assert result_received["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_transfer_call_renders_destination_from_initial_context(self):
+        """Transfer call tools resolve destination templates before provider calls."""
+        from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
+
+        mock_engine = Mock()
+        mock_engine._workflow_run_id = 1
+        mock_engine._call_context_vars = {
+            "transfer_destination": "+14155550123",
+        }
+        mock_engine._gathered_context = {}
+        mock_engine._fetch_recording_audio = None
+        mock_engine._audio_config = SimpleNamespace(transport_out_sample_rate=8000)
+        mock_engine._transport_output = SimpleNamespace(queue_frame=AsyncMock())
+        mock_engine._get_organization_id = AsyncMock(return_value=1)
+        mock_engine.set_mute_pipeline = Mock()
+        mock_engine.end_call_with_reason = AsyncMock()
+
+        manager = CustomToolManager(mock_engine)
+        tool = MockToolModel(
+            tool_uuid="transfer-tool-uuid",
+            name="Transfer Call",
+            description="Transfer the caller",
+            category="transfer_call",
+            definition={
+                "schema_version": 1,
+                "type": "transfer_call",
+                "config": {
+                    "destination": "{{initial_context.transfer_destination}}",
+                    "timeout": 30,
+                },
+            },
+        )
+        handler, _timeout_secs = manager._create_handler(tool, "transfer_call")
+
+        workflow_run = SimpleNamespace(
+            mode=WorkflowRunMode.TWILIO.value,
+            gathered_context={"call_id": "caller-call-sid"},
+        )
+        provider = Mock()
+        provider.supports_transfers.return_value = True
+        provider.validate_config.return_value = True
+        provider.transfer_call = AsyncMock(return_value={"call_sid": "dest-call-sid"})
+
+        transfer_event = Mock()
+        transfer_event.to_result_dict.return_value = {
+            "status": "failed",
+            "action": "transfer_failed",
+            "reason": "test_complete",
+        }
+        transfer_manager = Mock()
+        transfer_manager.store_transfer_context = AsyncMock()
+        transfer_manager.wait_for_transfer_completion = AsyncMock(
+            return_value=transfer_event
+        )
+
+        result_received = None
+
+        async def mock_result_callback(result, properties=None):
+            nonlocal result_received
+            result_received = result
+
+        mock_params = Mock()
+        mock_params.arguments = {}
+        mock_params.result_callback = mock_result_callback
+
+        with (
+            patch(
+                "api.services.workflow.pipecat_engine_custom_tools.db_client.get_workflow_run_by_id",
+                new=AsyncMock(return_value=workflow_run),
+            ),
+            patch(
+                "api.services.workflow.pipecat_engine_custom_tools.get_telephony_provider_for_run",
+                new=AsyncMock(return_value=provider),
+            ),
+            patch(
+                "api.services.workflow.pipecat_engine_custom_tools.get_call_transfer_manager",
+                new=AsyncMock(return_value=transfer_manager),
+            ),
+            patch(
+                "api.services.workflow.pipecat_engine_custom_tools.play_audio_loop",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            await handler(mock_params)
+
+        provider.transfer_call.assert_awaited_once()
+        assert provider.transfer_call.await_args.kwargs["destination"] == "+14155550123"
+        first_context = transfer_manager.store_transfer_context.await_args_list[0].args[
+            0
+        ]
+        assert first_context.target_number == "+14155550123"
+        assert result_received["status"] == "transfer_failed"
+
+    @pytest.mark.asyncio
+    async def test_transfer_call_propagates_provider_destination_error(self):
+        """Provider-specific destination failures are returned through the tool result."""
+        from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
+
+        mock_engine = Mock()
+        mock_engine._workflow_run_id = 1
+        mock_engine._call_context_vars = {}
+        mock_engine._gathered_context = {}
+        mock_engine._fetch_recording_audio = None
+        mock_engine._audio_config = SimpleNamespace(transport_out_sample_rate=8000)
+        mock_engine._transport_output = SimpleNamespace(queue_frame=AsyncMock())
+        mock_engine._get_organization_id = AsyncMock(return_value=1)
+        mock_engine.set_mute_pipeline = Mock()
+        mock_engine.end_call_with_reason = AsyncMock()
+
+        manager = CustomToolManager(mock_engine)
+        tool = MockToolModel(
+            tool_uuid="transfer-tool-uuid",
+            name="Transfer Call",
+            description="Transfer the caller",
+            category="transfer_call",
+            definition={
+                "schema_version": 1,
+                "type": "transfer_call",
+                "config": {
+                    "destination": "provider-specific-destination",
+                    "timeout": 30,
+                },
+            },
+        )
+        handler, _timeout_secs = manager._create_handler(tool, "transfer_call")
+
+        workflow_run = SimpleNamespace(
+            mode=WorkflowRunMode.TWILIO.value,
+            gathered_context={"call_id": "caller-call-sid"},
+        )
+        provider = Mock()
+        provider.supports_transfers.return_value = True
+        provider.validate_config.return_value = True
+        provider.transfer_call = AsyncMock(
+            side_effect=Exception("provider rejected destination")
+        )
+
+        transfer_manager = Mock()
+        transfer_manager.store_transfer_context = AsyncMock()
+        transfer_manager.remove_transfer_context = AsyncMock()
+
+        result_received = None
+
+        async def mock_result_callback(result, properties=None):
+            nonlocal result_received
+            result_received = result
+
+        mock_params = Mock()
+        mock_params.arguments = {}
+        mock_params.result_callback = mock_result_callback
+
+        with (
+            patch(
+                "api.services.workflow.pipecat_engine_custom_tools.db_client.get_workflow_run_by_id",
+                new=AsyncMock(return_value=workflow_run),
+            ),
+            patch(
+                "api.services.workflow.pipecat_engine_custom_tools.get_telephony_provider_for_run",
+                new=AsyncMock(return_value=provider),
+            ),
+            patch(
+                "api.services.workflow.pipecat_engine_custom_tools.get_call_transfer_manager",
+                new=AsyncMock(return_value=transfer_manager),
+            ),
+        ):
+            await handler(mock_params)
+
+        provider.transfer_call.assert_awaited_once()
+        assert (
+            provider.transfer_call.await_args.kwargs["destination"]
+            == "provider-specific-destination"
+        )
+        transfer_manager.remove_transfer_context.assert_awaited_once()
+        assert result_received == {
+            "status": "transfer_failed",
+            "reason": "provider_error",
+            "message": "Transfer provider failed: provider rejected destination",
+        }
 
 
 def _update_llm_context(context, system_message, functions):

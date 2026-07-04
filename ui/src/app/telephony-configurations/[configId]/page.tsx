@@ -55,16 +55,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useAppConfig } from "@/context/AppConfigContext";
+import { detailFromError } from "@/lib/apiError";
 import { useAuth } from "@/lib/auth";
+import { resolveWebhookBaseUrl } from "@/lib/webhookUrl";
 
 const INBOUND_WEBHOOK_PATH = "/api/v1/telephony/inbound/run";
-
-function getInboundWebhookUrl(): string {
-  const backendUrl =
-    process.env.NEXT_PUBLIC_BACKEND_URL ||
-    (typeof window !== "undefined" ? window.location.origin : "");
-  return `${backendUrl}${INBOUND_WEBHOOK_PATH}`;
-}
 
 export default function TelephonyConfigurationDetailPage() {
   const router = useRouter();
@@ -72,6 +68,8 @@ export default function TelephonyConfigurationDetailPage() {
   const configId = Number(params.configId);
 
   const { user, getAccessToken, loading: authLoading } = useAuth();
+  const { config: appConfig } = useAppConfig();
+  const inboundWebhookUrl = `${resolveWebhookBaseUrl(appConfig?.tunnelUrl)}${INBOUND_WEBHOOK_PATH}`;
   const [config, setConfig] = useState<TelephonyConfigurationDetail | null>(null);
   const [phoneNumbers, setPhoneNumbers] = useState<PhoneNumberResponse[]>([]);
   const [loading, setLoading] = useState(true);
@@ -264,7 +262,7 @@ export default function TelephonyConfigurationDetailPage() {
             <button
               type="button"
               onClick={() => {
-                const url = getInboundWebhookUrl();
+                const url = inboundWebhookUrl;
                 navigator.clipboard
                   .writeText(url)
                   .then(() => toast.success("Inbound webhook URL copied"))
@@ -274,7 +272,7 @@ export default function TelephonyConfigurationDetailPage() {
               aria-label="Copy inbound webhook URL"
               className="inline-flex items-center gap-1 self-start rounded font-mono text-xs text-muted-foreground hover:text-foreground"
             >
-              <span className="truncate">{getInboundWebhookUrl()}</span>
+              <span className="truncate">{inboundWebhookUrl}</span>
               <Copy className="h-3 w-3 shrink-0" />
             </button>
           </div>
@@ -448,15 +446,4 @@ export default function TelephonyConfigurationDetailPage() {
       </AlertDialog>
     </div>
   );
-}
-
-function detailFromError(err: unknown): string {
-  if (typeof err === "string") return err;
-  const e = err as { detail?: unknown };
-  if (typeof e?.detail === "string") return e.detail;
-  if (Array.isArray(e?.detail) && e.detail.length > 0) {
-    const first = e.detail[0] as { msg?: string };
-    if (first?.msg) return first.msg;
-  }
-  return "Request failed";
 }

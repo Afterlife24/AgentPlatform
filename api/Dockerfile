@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Multi-stage Dockerfile
 # Stage 1: Builder - Install Python dependencies into a venv via uv
 # (mirrors .devcontainer/Dockerfile's venv-builder stage).
@@ -36,7 +37,7 @@ RUN --mount=type=bind,source=api/requirements.txt,target=/tmp/req.txt \
 #      sys.prefix/nltk_data, so it travels with the venv on COPY.
 RUN --mount=type=bind,source=pipecat,target=/tmp/pipecat,rw \
     --mount=type=cache,target=/root/.cache/uv \
-    uv pip install '/tmp/pipecat[cartesia,deepgram,openai,elevenlabs,groq,google,azure,sarvam,soundfile,silero,webrtc,speechmatics,openrouter,camb,mcp]' \
+    uv pip install '/tmp/pipecat[cartesia,deepgram,openai,elevenlabs,groq,google,azure,sarvam,soundfile,silero,webrtc,speechmatics,openrouter,camb,mcp,inworld,smallest]' \
  && uv pip uninstall opencv-python \
  && uv pip install opencv-python-headless \
  && python -c "import nltk; nltk.download('punkt_tab', download_dir='/opt/venv/nltk_data', quiet=True)"
@@ -57,14 +58,54 @@ RUN npm ci --omit=dev && npm cache clean --force
 
 # Stage 3: Static ffmpeg binary (avoids apt ffmpeg pulling mesa/libllvm for
 # hardware acceleration we don't use server-side).
+#
+# Source: BtbN/FFmpeg-Builds, served from GitHub's release-assets CDN (fast,
+# highly available, multi-arch). We pin a specific build for reproducibility,
+# but to a *month-end* autobuild tag — not a daily one. BtbN prunes daily
+# autobuilds after ~2 weeks (the previous pin was a daily tag and started
+# 404ing once GC'd), but keeps one month-end snapshot per month long-term
+# (~2 years back). A dated tag's assets are immutable, so the per-arch sha256
+# below never rots: builds stay reproducible AND integrity-verified.
+#
+# To upgrade ffmpeg: bump BTBN_TAG + BTBN_REV to a newer month-end autobuild
+# and refresh the two sha256s. No download needed — read tag, revision and
+# per-asset sha256 straight from the GitHub release-asset metadata:
+#   gh api repos/BtbN/FFmpeg-Builds/releases/tags/<tag> \
+#     --jq '.assets[] | select(.name|test("(linux64|linuxarm64)-gpl\\.tar\\.xz$")) | "\(.name) \(.digest)"'
+#
+# `--speed-limit/--speed-time` aborts a *stalled* transfer after 30s of <1KB/s
+# (the cause of "stuck" builds) without killing a slow-but-progressing
+# download; `--max-time` is a hard backstop; `--retry` rides out transient CDN
+# hiccups. The archive nests binaries under bin/, so locate them with `find`.
 FROM debian:trixie-slim AS ffmpeg-static
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates xz-utils \
-    && curl -fsSL -o /tmp/ffmpeg.tar.xz https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz \
-    && mkdir -p /tmp/ffmpeg \
-    && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1 \
-    && mv /tmp/ffmpeg/ffmpeg /tmp/ffmpeg/ffprobe /usr/local/bin/ \
-    && chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+ARG TARGETARCH
+ARG BTBN_TAG=autobuild-2026-05-31-13-22
+ARG BTBN_REV=N-124714-g49a77d37be
+RUN set -eu ; \
+    apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates xz-utils ; \
+    rm -rf /var/lib/apt/lists/* ; \
+    case "${TARGETARCH}" in \
+      amd64) btbn_arch=linux64 ; \
+             sha256=ee052121296e6479325e09c6097d48e72a4af472d18c2b94388b5405dcde6cce ;; \
+      arm64) btbn_arch=linuxarm64 ; \
+             sha256=e97545305043794cdf7b698d713e29291464e0c35bb8e0f3ff1f62e4c56eedd6 ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2 ; exit 1 ;; \
+    esac ; \
+    url="https://github.com/BtbN/FFmpeg-Builds/releases/download/${BTBN_TAG}/ffmpeg-${BTBN_REV}-${btbn_arch}-gpl.tar.xz" ; \
+    mkdir -p /tmp/ffmpeg ; cd /tmp/ffmpeg ; \
+    echo "Downloading ffmpeg (${BTBN_TAG}) from ${url}" ; \
+    curl -fsSL --connect-timeout 20 --speed-limit 1024 --speed-time 30 \
+         --max-time 600 --retry 3 --retry-delay 5 --retry-all-errors \
+         -o ffmpeg.tar.xz "${url}" ; \
+    echo "${sha256}  ffmpeg.tar.xz" | sha256sum -c - ; \
+    tar -xJf ffmpeg.tar.xz ; \
+    ffmpeg_bin="$(find /tmp/ffmpeg -type f -name ffmpeg | head -n1)" ; \
+    ffprobe_bin="$(find /tmp/ffmpeg -type f -name ffprobe | head -n1)" ; \
+    [ -n "${ffmpeg_bin}" ] && [ -n "${ffprobe_bin}" ] ; \
+    mv "${ffmpeg_bin}" "${ffprobe_bin}" /usr/local/bin/ ; \
+    chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe ; \
+    rm -rf /tmp/ffmpeg
 
 # Stage 4: Runtime - Minimal image with only runtime dependencies
 FROM python:3.13-slim AS runner
@@ -100,7 +141,22 @@ ENV PYTHONUNBUFFERED=1
 # Copy application code (chown at copy-time avoids a duplicate /app layer
 # from a later `RUN chown -R`, which would double the on-disk size of /app).
 COPY --chown=dograh:dograh ./api ./api
-COPY --chown=dograh:dograh ./scripts/start_services_docker.sh ./scripts/start_services_docker.sh
+
+# Entrypoint scripts.
+#   start_services_docker.sh — single-container (docker-compose) entrypoint
+#     that runs every service in one process tree.
+#   run_*.sh                 — per-service entrypoints used by the Helm chart,
+#     which runs each workload (web, arq-worker, ari-manager,
+#     campaign-orchestrator, migrate) as its own pod. Keep this list in sync
+#     with the command:[] entries in deploy/helm/dograh/templates/*.yaml.
+COPY --chown=dograh:dograh \
+     ./scripts/start_services_docker.sh \
+     ./scripts/run_migrate.sh \
+     ./scripts/run_web.sh \
+     ./scripts/run_arq_worker.sh \
+     ./scripts/run_ari_manager.sh \
+     ./scripts/run_campaign_orchestrator.sh \
+     ./scripts/
 
 # ts_validator Node deps (built in ts-deps stage with full node:22-slim image).
 # The validator runs as a short-lived subprocess from api/mcp_server/ts_bridge.py.

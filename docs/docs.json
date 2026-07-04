@@ -21,6 +21,7 @@
                 "group": "Introduction",
                 "pages": [
                   "getting-started/index",
+                  "getting-started/first-agent",
                   "getting-started/prerequisites",
                   "getting-started/troubleshooting"
                 ]
@@ -157,6 +158,7 @@
             "pages": [
               "deployment/introduction",
               "deployment/docker",
+              "deployment/authentication",
               "deployment/custom-domain",
               "deployment/scaling",
               "deployment/update",
