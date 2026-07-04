@@ -124,9 +124,9 @@ Always access the app at **http://localhost:3000** (not 3010 — see LOCAL_SETUP
 
 **Root cause:** `BACKEND_API_ENDPOINT=http://localhost:8000` matches a special case in `api/utils/common.py` (`get_backend_endpoints()`) that treats "localhost" as a signal to look for a running Cloudflare tunnel first (`api/utils/tunnel.py`). Since we don't run cloudflared, that lookup takes ~3-5s to time out before falling back. Every call to `/api/v1/health` — including the UI's server-side version-check with its 3-second timeout — got caught by this delay. The app itself worked fine because its own health checks use much longer timeouts (30-60s).
 
-**Fix:** Changed `BACKEND_API_ENDPOINT` in `.env` from `http://localhost:8000` to `http://api:8000` (the Docker-internal hostname). Still resolves correctly for all container-to-container calls, but skips the tunnel-check path entirely since it doesn't contain "localhost" or "127.0.0.1". Health check response time dropped from ~3.1s to ~0.03s.
+**Fix (attempted, then reverted — see Change 4):** Changed `BACKEND_API_ENDPOINT` in `.env` from `http://localhost:8000` to `http://api:8000` (the Docker-internal hostname). This fixed the health-check delay but broke actual app functionality — see Change 4 below. **Do not repeat this fix.**
 
-**Verification command:**
+**Verification command (for the health-check timing itself):**
 ```bash
 docker exec dograh-api-1 python -c "
 import urllib.request, time
@@ -136,7 +136,7 @@ print('Took:', time.time() - start, 'seconds')
 "
 ```
 
-**If this breaks again:** check `.env` for `BACKEND_API_ENDPOINT` — it must never contain "localhost" or "127.0.0.1" unless cloudflared is actually running (`docker compose --profile tunnel up`).
+**Correct takeaway:** The 3-second delay on the version-check banner is a **cosmetic, acceptable tradeoff**. `BACKEND_API_ENDPOINT` must stay `http://localhost:8000` — see Change 4 for why.
 
 ---
 
@@ -146,3 +146,25 @@ print('Took:', time.time() - start, 'seconds')
 - **MinIO (9000, 9001)** is already correctly bound to `127.0.0.1` (not publicly accessible).
 - Always run `scripts/setup_remote.sh` on the EC2 instance before starting — it replaces all localhost references with the server's public IP and handles TLS/TURN config.
 - Never commit `.env` — it's gitignored by design, and contains secrets that differ per environment (local / dev EC2 / prod EC2).
+
+
+---
+
+### Change 4: Reverted Change 3 — BACKEND_API_ENDPOINT must stay "localhost" (2026-07-04)
+
+**File changed:** `.env` (local only, gitignored, never committed)
+
+**Symptom after Change 3:** Creating/opening agents failed completely. Browser console showed:
+```
+GET http://api:8000/api/v1/workflow/fetch/1 net::ERR_NAME_NOT_RESOLVED
+GET http://api:8000/api/v1/user/onboarding-state net::ERR_NAME_NOT_RESOLVED
+POST http://api:8000/api/v1/workflow/create/template net::ERR_NAME_NOT_RESOLVED
+```
+
+**Root cause:** `BACKEND_API_ENDPOINT` is not purely a server-side/internal value. The API includes it in its `/health` response (`backend_api_endpoint` field), and the **browser** reads that value to decide where to send API calls directly — see `ui/src/lib/apiClient.ts` (`resolveBrowserBackendUrl`) and `ui/src/context/AppConfigContext.tsx`. `http://api:8000` is a Docker-internal hostname; it means nothing to a browser running on the host machine, so every direct client-side API call failed with `ERR_NAME_NOT_RESOLVED`. `http://localhost:8000` works because docker-compose publishes port 8000 to the host (`ports: ["8000:8000"]` in `docker-compose.yaml`), so the browser can actually reach it.
+
+**Fix:** Reverted `BACKEND_API_ENDPOINT` back to `http://localhost:8000`.
+
+**Net result:** We're back to accepting the cosmetic ~3s delay on the version-check banner (Change 3's original symptom) as an acceptable tradeoff, since the alternative breaks the app entirely. If we want the banner delay gone AND working browser calls, the real fix is to actually run cloudflared (`docker compose --profile tunnel up`) so the tunnel lookup in `api/utils/tunnel.py` succeeds instead of timing out — not worth the complexity for local dev.
+
+**Rule going forward:** `BACKEND_API_ENDPOINT` in `.env` must always be a URL the **browser** can resolve (i.e. `http://localhost:8000`), never a Docker-internal hostname like `http://api:8000`. This applies to `MINIO_PUBLIC_ENDPOINT` too, for the same reason — it's used to fetch audio recordings directly from the browser.
