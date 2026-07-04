@@ -189,8 +189,6 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-      cloudflared:
-        condition: service_started
     healthcheck:
       test:
         [
@@ -210,6 +208,13 @@ services:
       # Server-side URL (SSR, internal Docker network)
       BACKEND_URL: "${BACKEND_URL:-http://api:8000}"
       NODE_ENV: "oss"
+      # Next.js standalone server.js binds to process.env.HOSTNAME if set.
+      # Docker auto-sets HOSTNAME to the container ID, which makes the app
+      # listen only on that specific container IP instead of all interfaces.
+      # This breaks the container's own healthcheck (which probes localhost)
+      # even though the app works fine via Docker's internal network. Force
+      # it to bind everywhere.
+      HOSTNAME: "0.0.0.0"
       # Flag to enable/ disable posthog
       ENABLE_TELEMETRY: "${ENABLE_TELEMETRY:-true}"
 
@@ -225,7 +230,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget --no-verbose --tries=1 --spider http://localhost:3010 || exit 1",
+          "wget --no-verbose --tries=1 --spider http://127.0.0.1:3010 || exit 1",
         ]
       interval: 30s
       timeout: 10s
@@ -237,9 +242,25 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: cloudflared-tunnel
+    profiles: ["local-tunnel"]
     command: tunnel --no-autoupdate --url http://api:8000 --metrics 0.0.0.0:2000
     ports:
       - "2000:2000" # Expose metrics endpoint
+    networks:
+      - app-network
+
+  nginx-local:
+    image: nginx:alpine
+    container_name: nginx_local
+    depends_on:
+      ui:
+        condition: service_started
+      api:
+        condition: service_healthy
+    ports:
+      - "3000:80"
+    volumes:
+      - ./nginx-local.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       - app-network
 
