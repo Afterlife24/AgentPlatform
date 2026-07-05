@@ -4,9 +4,14 @@ name: Deploy to EC2
 # via a merged PR (i.e. a push to the branch itself, not every commit inside
 # an open PR). develop -> devagents.autonomiq.ae, main -> mainagents.autonomiq.ae.
 #
-# Runs synchronously: the job blocks until the remote `docker compose --build`
-# finishes (ui rebuild can take several minutes), so pass/fail is visible in
-# the Actions tab before the workflow completes.
+# Runs on a self-hosted runner installed directly on each target EC2 instance
+# (see /home/ubuntu/actions-runner on each box). The runner polls GitHub
+# outbound, so no inbound SSH access from GitHub's IP ranges is needed - the
+# security group's "SSH from My IP only" rule stays untouched.
+#
+# Runs synchronously: the job blocks until `docker compose --build` finishes
+# (ui rebuild can take several minutes), so pass/fail is visible in the
+# Actions tab before the workflow completes.
 
 on:
   push:
@@ -20,33 +25,14 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, "${{ github.ref_name }}"]
     steps:
-      - name: Select target environment
-        id: env
+      - name: Sync repo and redeploy
         run: |
-          if [[ "${{ github.ref_name }}" == "main" ]]; then
-            echo "host_secret=MAIN_HOST" >> "$GITHUB_OUTPUT"
-            echo "key_secret=MAIN_SSH_KEY" >> "$GITHUB_OUTPUT"
-            echo "branch=main" >> "$GITHUB_OUTPUT"
-          else
-            echo "host_secret=DEV_HOST" >> "$GITHUB_OUTPUT"
-            echo "key_secret=DEV_SSH_KEY" >> "$GITHUB_OUTPUT"
-            echo "branch=develop" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ github.ref_name == 'main' && secrets.MAIN_HOST || secrets.DEV_HOST }}
-          username: ubuntu
-          key: ${{ github.ref_name == 'main' && secrets.MAIN_SSH_KEY || secrets.DEV_SSH_KEY }}
-          command_timeout: 20m
-          script: |
-            set -euo pipefail
-            cd /home/ubuntu/dograh
-            git fetch origin
-            git checkout ${{ steps.env.outputs.branch }}
-            git reset --hard origin/${{ steps.env.outputs.branch }}
-            sudo docker compose --profile remote up -d --build
-            echo "Deployed $(git rev-parse --short HEAD) on ${{ steps.env.outputs.branch }}"
+          set -euo pipefail
+          cd /home/ubuntu/dograh
+          git fetch origin
+          git checkout ${{ github.ref_name }}
+          git reset --hard origin/${{ github.ref_name }}
+          sudo docker compose --profile remote up -d --build
+          echo "Deployed $(git rev-parse --short HEAD) on ${{ github.ref_name }}"
