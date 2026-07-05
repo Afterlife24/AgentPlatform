@@ -168,3 +168,156 @@ POST http://api:8000/api/v1/workflow/create/template net::ERR_NAME_NOT_RESOLVED
 **Net result:** We're back to accepting the cosmetic ~3s delay on the version-check banner (Change 3's original symptom) as an acceptable tradeoff, since the alternative breaks the app entirely. If we want the banner delay gone AND working browser calls, the real fix is to actually run cloudflared (`docker compose --profile tunnel up`) so the tunnel lookup in `api/utils/tunnel.py` succeeds instead of timing out — not worth the complexity for local dev.
 
 **Rule going forward:** `BACKEND_API_ENDPOINT` in `.env` must always be a URL the **browser** can resolve (i.e. `http://localhost:8000`), never a Docker-internal hostname like `http://api:8000`. This applies to `MINIO_PUBLIC_ENDPOINT` too, for the same reason — it's used to fetch audio recordings directly from the browser.
+
+---
+
+## 6. EC2 Deployment (Mumbai, ap-south-1)
+
+Two long-lived EC2 instances, one per branch, replacing the earlier Frankfurt (eu-central-1) attempt which was torn down entirely (instance, security group, key pair all deleted — nothing to migrate from there).
+
+| Environment | Branch | Instance type | Public URL | Server IP |
+|---|---|---|---|---|
+| Develop | `develop` | t3.large, 15 GB gp3 | `https://devagents.autonomiq.ae` | `3.108.185.4` |
+| Main (prod) | `main` | t3.large, 30 GB gp3 | `https://mainagents.autonomiq.ae` | `13.203.227.111` |
+
+Both provisioned in `ap-south-1`, security group: SSH restricted to a single office/home IP (`/32`), HTTP (80) and HTTPS (443) open to `0.0.0.0/0`. TURN/STUN ports (3478, 5349, 49152–49200) are **not** opened at the security-group level yet — only add them once voice-call testing actually needs them, per the "don't open ports until required" rule we've followed throughout.
+
+**Important — deployment source of truth:** `scripts/setup_remote.sh` (prebuilt mode) downloads its own copy of `docker-compose.yaml` and support files from `raw.githubusercontent.com/dograh-hq/dograh` into a nested subfolder, completely disconnected from the actual git clone it's run from. On both instances this was corrected — the stack now runs directly out of `/home/ubuntu/dograh` (the real `git clone` of `Afterlife24/AgentPlatform`), with `.env` and `certs/` copied in and the nested folder retired. **Any manual work on these servers must happen in `/home/ubuntu/dograh`, not a nested `dograh/dograh` folder** — if you ever see one, something regressed.
+
+**t3.large is required, not optional.** t3.medium (4 GB RAM) was tried first for the develop box and caused the instance to hang/become SSH-unreachable under the combined load of 7 running containers plus a `next build` (webpack + 1,085 npm packages) — likely OOM. Instance had to be stopped, resized to t3.large (8 GB RAM) via `aws ec2 modify-instance-attribute`, and restarted. **Resizing changes the public IP** (unless an Elastic IP is attached) — after a resize, `.env`'s `SERVER_IP`/`PUBLIC_HOST`/`PUBLIC_BASE_URL` and the TLS cert must be regenerated for the new IP/domain, and the API container recreated to pick up the new env.
+
+---
+
+## 7. Fix: `/embed` widget script gated behind login (2026-07-05)
+
+**File changed:** `ui/src/middleware.ts`
+
+**Symptom:** Embedding the voice widget on an external site (`<script src=".../embed/dograh-widget.js?...">`) silently failed — no icon, no console error dialog, just nothing. Direct `curl` to the script URL returned `307 Temporary Redirect` to `/auth/login`.
+
+**Root cause:** The OSS auth middleware redirects any unauthenticated request to `/auth/login`, using a `PUBLIC_PATHS` allowlist (`/auth/login`, `/auth/signup`) to skip that check for the login pages themselves. `/embed/dograh-widget.js` wasn't in that allowlist — so anonymous visitors on a third-party site (who obviously have no Dograh login cookie) got redirected to a login page instead of the JS file. This defeats the entire purpose of an embeddable widget.
+
+**Fix:**
+```ts
+const PUBLIC_PATHS = ['/auth/login', '/auth/signup', '/embed'];
+```
+
+**Verification:**
+```bash
+curl -s -D - -o /dev/null http://localhost:3010/embed/dograh-widget.js
+# must return 200, not 307
+```
+
+**This fix is upstream-independent** — `ui/src/middleware.ts` is our fork's own file, not something Dograh's weekly `upstream/main` sync will touch, so this survives future `git merge upstream/main` runs untouched.
+
+---
+
+## 8. Fix: prebuilt `ui` image doesn't include our patches (2026-07-05)
+
+**File changed:** `docker-compose.override.yaml`
+
+**Symptom:** Change 7's fix worked immediately after a manual `docker build`, but reappeared (307 again) after later merging `develop` into `main` and redeploying with `setup_remote.sh` (prebuilt mode).
+
+**Root cause:** `setup_remote.sh` in prebuilt mode pulls `dograhai/dograh-ui:latest` — Dograh's own official image on Docker Hub, built from **their** repo, not our fork. Merging a fix into our `main` branch on GitHub has zero effect on that Docker Hub image; only Dograh publishing a new image would change it, and our patch obviously isn't in their codebase. Any future deploy that does a plain `--pull always` (the prebuilt default) silently reverts to the unpatched image.
+
+**Fix:** Added a `ui` build override so `ui` is always built from our fork's source instead of pulled:
+```yaml
+services:
+  ui:
+    build:
+      context: .
+      dockerfile: ui/Dockerfile
+    image: dograh-local/dograh-ui:local
+    pull_policy: never
+```
+`api` is untouched and still pulls the prebuilt tag — our patch only touches `ui/`.
+
+**Rule going forward:** every deploy (manual or CI) must run
+```bash
+docker compose --profile remote up -d --build
+```
+using `--build`, **never** `--pull always`. Because this directive lives in the committed `docker-compose.override.yaml`, any environment that runs `git pull` + the command above automatically stays patched — no manual step required per deploy. This is also why Section 6's "run from the real git clone, not the nested upstream-downloaded folder" fix matters: the override only takes effect if Compose is actually invoked from a directory that has this file.
+
+---
+
+## 9. Custom domains via Route 53 (2026-07-05)
+
+**Zone:** `autonomiq.ae`, hosted in a **different AWS account** than the EC2 instances (AWS CLI profile `default`, not `autonomiq`). The existing zone already serves the main marketing site (CloudFront) and mail (MX/A records) — untouched.
+
+**Records added** (simple `A` records, no alias, TTL 300):
+
+| Record | Value |
+|---|---|
+| `devagents.autonomiq.ae` | `3.108.185.4` |
+| `mainagents.autonomiq.ae` | `13.203.227.111` |
+
+**Per-server steps after adding the DNS record** (this is what Dograh's own `scripts/setup_custom_domain.sh` automates, done manually here since the instances were already running):
+1. Update `.env`: `PUBLIC_HOST=<domain>`, `PUBLIC_BASE_URL=https://<domain>` (leave `SERVER_IP` as the raw IP — coturn needs it).
+2. Regenerate the bootstrap self-signed cert for the new CN, recreate `api`/`nginx` so the API picks up the new `PUBLIC_HOST`.
+3. `sudo certbot certonly --webroot -w certs -d <domain> ...` for a real Let's Encrypt cert, then copy `fullchain.pem`/`privkey.pem` into `certs/local.crt`/`certs/local.key` and restart `nginx_https`.
+
+The original sslip.io URLs (`15-207-85-16.sslip.io`, `13-203-227-111.sslip.io`, etc.) stop working once `PUBLIC_HOST` is repointed — always use the current domain from the table in Section 6.
+
+**`certs/` is gitignored** (added in this change) — each server holds its own cert for its own domain; never commit these.
+
+---
+
+## 10. CI/CD: auto-deploy on push to develop/main (2026-07-05)
+
+**File added:** `.github/workflows/deploy-ec2.yml`
+
+**Trigger:** `push` to `develop` or `main` only — i.e. fires when a PR is merged into the branch, not on every commit inside an open PR. Matches the intended flow: feature branch → PR (reviewed/approved) → merged into `develop` → manual testing on devagents → merged into `main` → auto-deployed to prod.
+
+**What it does, per branch:**
+```bash
+cd /home/ubuntu/dograh
+git fetch origin
+git checkout <branch>
+git reset --hard origin/<branch>
+sudo docker compose --profile remote up -d --build
+```
+`git reset --hard` guarantees the server exactly matches GitHub, no drift from any manual SSH edits. Safe because `.env` and `certs/` are gitignored/untracked — `reset --hard` never touches untracked files.
+
+**Runs synchronously** — the job blocks until the `--build` step finishes (several minutes for a `ui` rebuild), so pass/fail is visible in the Actions tab before the workflow completes, not fire-and-forget.
+
+### Why SSH-based deploy (`appleboy/ssh-action`) was tried first and abandoned
+
+The first version of this workflow SSHed from GitHub's own hosted runners into each EC2 box. It failed with `dial tcp <ip>:22: i/o timeout` — **not** a bad key, an actual network timeout. GitHub-hosted runners run on Microsoft/GitHub infrastructure with IPs outside our security group's "SSH from my IP only" rule, so the connection never reached the box.
+
+**Considered and rejected:** opening port 22 to GitHub's published Actions IP ranges. `https://api.github.com/meta` currently lists **7,292** individual CIDR ranges for Actions — far beyond a security group's rule limit, and the only realistic way to "allow GitHub" is `0.0.0.0/0`, which removes the SSH IP restriction entirely. Rejected to keep the existing SSH exposure unchanged.
+
+### Solution: self-hosted runners
+
+A GitHub Actions runner is installed as a **systemd service** directly on each EC2 instance (`/home/ubuntu/actions-runner`). It polls GitHub over an outbound connection for jobs — no inbound access from GitHub is ever needed, so the security group is completely untouched.
+
+| Instance | Runner name | Label |
+|---|---|---|
+| develop | `dograh-develop-runner` | `develop` |
+| main | `dograh-main-runner` | `main` |
+
+The workflow targets the matching runner by label:
+```yaml
+runs-on: [self-hosted, "${{ github.ref_name }}"]
+```
+
+**Setup steps (for reference / replacing an instance later):**
+```bash
+# Generate a fresh single-use registration token (repo admin, via gh CLI or API):
+gh api -X POST repos/Afterlife24/AgentPlatform/actions/runners/registration-token --jq .token
+
+# On the target EC2 instance:
+mkdir -p ~/actions-runner && cd ~/actions-runner
+curl -o actions-runner-linux-x64.tar.gz -L https://github.com/actions/runner/releases/download/v2.328.0/actions-runner-linux-x64-2.328.0.tar.gz
+tar xzf actions-runner-linux-x64.tar.gz
+./config.sh --url https://github.com/Afterlife24/AgentPlatform --token <TOKEN> \
+  --name <dograh-develop-runner|dograh-main-runner> --labels <develop|main> --work _work --unattended --replace
+sudo ./svc.sh install ubuntu
+sudo ./svc.sh start
+```
+
+**Repository secrets** (`Settings → Secrets and variables → Actions`) from the earlier SSH-based attempt (`DEV_SSH_KEY`, `MAIN_SSH_KEY`, `DEV_HOST`, `MAIN_HOST`) are no longer used by the workflow but were left in place rather than deleted — harmless, and saves re-adding them if a future change needs direct SSH again.
+
+**Verifying a runner is online:**
+```bash
+gh api repos/Afterlife24/AgentPlatform/actions/runners
+# status should be "online" for both dograh-develop-runner and dograh-main-runner
+```
