@@ -30,3 +30,21 @@ services:
       - ./nginx-local.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       - app-network
+
+  # Build the ui image from our fork's source instead of pulling
+  # dograhai/dograh-ui:latest (the official upstream prebuilt tag). This is
+  # required because we carry a local patch on top of upstream (see
+  # ui/src/middleware.ts — exempts /embed from the auth redirect so the
+  # public widget script isn't gated behind login). Pulling the prebuilt
+  # tag would silently revert that patch on every deploy/restart, since the
+  # upstream image has no knowledge of our fork's commits.
+  #
+  # Any deploy/CI step for this project must use `--build` (not
+  # `--pull always`) so this directive actually takes effect, e.g.:
+  #   docker compose --profile remote up -d --build
+  ui:
+    build:
+      context: .
+      dockerfile: ui/Dockerfile
+    image: dograh-local/dograh-ui:local
+    pull_policy: never
