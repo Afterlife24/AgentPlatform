@@ -1,5 +1,8 @@
 # Dograh Local Setup Guide
 
+<!-- CI/CD pipeline test commit: verifying auto-deploy to devagents.autonomiq.ae -->
+
+
 ## Prerequisites
 
 - **Docker Desktop** installed and running (Engine running, green icon in system tray)
@@ -26,7 +29,7 @@ If missing, create it:
 ```
 
 ### 3. Start the stack
-
+First start the docker desktop by opening the app
 ```powershell
 docker compose up
 ```
