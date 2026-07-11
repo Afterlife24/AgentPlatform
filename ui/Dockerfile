@@ -36,6 +36,8 @@ COPY ui/public ./public
 COPY ui/src ./src
 
 # Set build-time environment variables (needed for Next.js build)
+ARG NEXT_PUBLIC_BACKEND_URL=""
+ENV NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL}
 ENV NEXT_PUBLIC_NODE_ENV="oss"
 ENV NEXT_TELEMETRY_DISABLED="1"
 ENV NEXT_PUBLIC_CHATWOOT_URL="https://chat.dograh.com"
@@ -44,7 +46,7 @@ ENV BACKEND_URL="http://api:8000"
 
 # Build the application with standalone mode
 # Increase Node.js heap size to prevent out-of-memory errors during build
-ENV NODE_OPTIONS="--max-old-space-size=4096"
+ENV NODE_OPTIONS="--max-old-space-size=2048"
 RUN npm run build && \
     rm -rf /tmp/* /root/.npm /root/.next/cache
 

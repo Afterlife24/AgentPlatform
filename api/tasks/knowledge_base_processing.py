@@ -18,21 +18,44 @@ from api.services.storage import storage_fs
 
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
 EMBEDDING_BATCH_SIZE = 64
+EMBEDDING_CONCURRENCY = 5  # Max parallel embedding requests
 
 
 async def _embed_texts_in_batches(
     embedding_service,
     texts: list[str],
     batch_size: int = EMBEDDING_BATCH_SIZE,
+    concurrency: int = EMBEDDING_CONCURRENCY,
 ) -> list[list[float]]:
-    """Generate embeddings in bounded batches for provider/MPS stability."""
+    """Generate embeddings in bounded batches with concurrent requests."""
+    import asyncio
+
+    batches = [
+        texts[start: start + batch_size]
+        for start in range(0, len(texts), batch_size)
+    ]
+
+    # Pre-allocate result slots to maintain order
+    results: list[list[list[float]] | None] = [None] * len(batches)
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def _process_batch(index: int, batch: list[str]):
+        async with semaphore:
+            logger.info(
+                f"Generating embedding batch {index + 1}/{len(batches)} ({len(batch)} texts)"
+            )
+            results[index] = await embedding_service.embed_texts(batch)
+
+    # Run all batches concurrently (bounded by semaphore)
+    await asyncio.gather(*[
+        _process_batch(i, batch) for i, batch in enumerate(batches)
+    ])
+
+    # Flatten results in order
     embeddings: list[list[float]] = []
-    for start in range(0, len(texts), batch_size):
-        batch = texts[start : start + batch_size]
-        logger.info(
-            f"Generating embedding batch {start // batch_size + 1} ({len(batch)} texts)"
-        )
-        embeddings.extend(await embedding_service.embed_texts(batch))
+    for result in results:
+        if result is not None:
+            embeddings.extend(result)
     return embeddings
 
 
@@ -69,7 +92,8 @@ async def process_knowledge_base_document(
         filename = s3_key.split("/")[-1]
         file_extension = os.path.splitext(filename)[1] or ".bin"
 
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
+        temp_file = tempfile.NamedTemporaryFile(
+            delete=False, suffix=file_extension)
         temp_file_path = temp_file.name
         temp_file.close()
 
@@ -78,7 +102,8 @@ async def process_knowledge_base_document(
         if not download_success:
             raise Exception(f"Failed to download file from S3: {s3_key}")
         if not os.path.exists(temp_file_path):
-            raise FileNotFoundError(f"Downloaded file not found: {temp_file_path}")
+            raise FileNotFoundError(
+                f"Downloaded file not found: {temp_file_path}")
 
         file_size = os.path.getsize(temp_file_path)
         logger.info(f"Downloaded file size: {file_size} bytes")
@@ -162,7 +187,8 @@ async def process_knowledge_base_document(
                 embeddings_model = effective_config.embeddings.model
                 embeddings_base_url = apply_managed_embeddings_base_url(
                     provider=embeddings_provider,
-                    base_url=getattr(effective_config.embeddings, "base_url", None),
+                    base_url=getattr(
+                        effective_config.embeddings, "base_url", None),
                 )
                 embeddings_endpoint = getattr(
                     effective_config.embeddings, "endpoint", None
@@ -175,7 +201,8 @@ async def process_knowledge_base_document(
                     f"model={embeddings_model}"
                 )
 
-        logger.info(f"Delegating document processing to MPS (mode={retrieval_mode})")
+        logger.info(
+            f"Delegating document processing to MPS (mode={retrieval_mode})")
         mps_response = await mps_service_key_client.process_document(
             file_path=temp_file_path,
             filename=filename,
@@ -236,7 +263,8 @@ async def process_knowledge_base_document(
         chunk_records = []
         chunk_texts = []
         for chunk in mps_chunks:
-            contextualized = chunk.get("contextualized_text") or chunk["chunk_text"]
+            contextualized = chunk.get(
+                "contextualized_text") or chunk["chunk_text"]
             chunk_records.append(
                 KnowledgeBaseChunkModel(
                     document_id=document_id,
@@ -299,4 +327,5 @@ async def process_knowledge_base_document(
                 os.remove(temp_file_path)
                 logger.debug(f"Cleaned up temp file: {temp_file_path}")
             except Exception as e:
-                logger.warning(f"Failed to clean up temp file {temp_file_path}: {e}")
+                logger.warning(
+                    f"Failed to clean up temp file {temp_file_path}: {e}")

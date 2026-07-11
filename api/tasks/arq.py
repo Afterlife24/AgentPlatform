@@ -1,5 +1,15 @@
 """ARQ worker configuration - setup logging before importing tasks"""
 
+from api.tasks.workflow_completion import process_workflow_completion
+from api.tasks.webhook_delivery import deliver_webhook, sweep_webhook_deliveries
+from api.tasks.run_integrations import run_integrations_post_workflow_run
+from api.tasks.knowledge_base_processing import process_knowledge_base_document
+from api.tasks.campaign_tasks import (
+    process_campaign_batch,
+    sync_campaign_source,
+)
+from arq.connections import ArqRedis, RedisSettings
+from arq import create_pool, cron, func
 import ssl
 from urllib.parse import urlparse
 
@@ -12,8 +22,6 @@ from api.tasks.function_names import FunctionNames
 setup_logging()
 
 # Now import ARQ and task dependencies
-from arq import create_pool, cron
-from arq.connections import ArqRedis, RedisSettings
 
 parsed_url = urlparse(REDIS_URL)
 
@@ -39,15 +47,6 @@ REDIS_SETTINGS = RedisSettings(
     ssl_check_hostname=False if use_ssl else None,
 )
 
-from api.tasks.campaign_tasks import (
-    process_campaign_batch,
-    sync_campaign_source,
-)
-from api.tasks.knowledge_base_processing import process_knowledge_base_document
-from api.tasks.run_integrations import run_integrations_post_workflow_run
-from api.tasks.webhook_delivery import deliver_webhook, sweep_webhook_deliveries
-from api.tasks.workflow_completion import process_workflow_completion
-
 
 class WorkerSettings:
     functions = [
@@ -55,7 +54,9 @@ class WorkerSettings:
         process_workflow_completion,
         sync_campaign_source,
         process_campaign_batch,
-        process_knowledge_base_document,
+        # Large documents can produce 90+ embedding batches (~3s each to
+        # services.dograh.com). Default ARQ timeout (300s) isn't enough.
+        func(process_knowledge_base_document, timeout=900),
         deliver_webhook,
     ]
     cron_jobs = [

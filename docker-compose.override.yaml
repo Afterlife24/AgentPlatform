@@ -24,6 +24,8 @@ services:
         condition: service_started
       api:
         condition: service_healthy
+      whatsapp-adapter:
+        condition: service_started
     ports:
       - "3000:80"
     volumes:
@@ -42,9 +44,57 @@ services:
   # Any deploy/CI step for this project must use `--build` (not
   # `--pull always`) so this directive actually takes effect, e.g.:
   #   docker compose --profile remote up -d --build
+  # Build the api image from source so we get the public_text_chat routes
+  # and any other local patches not yet in the upstream prebuilt image.
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: dograh-local/dograh-api:local
+    pull_policy: never
+    # Mount the local startup script and use it as the entrypoint
+    # (adds --proxy-headers to uvicorn for Twilio signature validation behind nginx)
+    volumes:
+      - ./scripts/start_services_docker_local.sh:/app/scripts/start_services_docker_local.sh:ro
+    command: ["./scripts/start_services_docker_local.sh"]
+
+  # Same image for the ARQ worker (built once, reused)
+  arq-worker:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: dograh-local/dograh-api:local
+    pull_policy: never
+
   ui:
     build:
       context: .
       dockerfile: ui/Dockerfile
+      args:
+        - NEXT_PUBLIC_BACKEND_URL=http://localhost:3000
     image: dograh-local/dograh-ui:local
     pull_policy: never
+    environment:
+      NEXT_PUBLIC_BACKEND_URL: "http://localhost:3000"
+
+  # WhatsApp adapter — Twilio WhatsApp webhooks routed via nginx at /whatsapp
+  whatsapp-adapter:
+    build:
+      context: ../whatsapp_adapter
+      dockerfile: Dockerfile
+    container_name: whatsapp_adapter
+    environment:
+      # Inside Docker, the Dograh API is reachable at http://api:8000
+      DOGRAH_API_BASE: "http://api:8000/api/v1"
+      DOGRAH_API_KEY: "${WHATSAPP_DOGRAH_API_KEY}"
+      DOGRAH_TRIGGER_PATH: "${WHATSAPP_DOGRAH_TRIGGER_PATH}"
+      TWILIO_ACCOUNT_SID: "${TWILIO_ACCOUNT_SID}"
+      TWILIO_AUTH_TOKEN: "${TWILIO_AUTH_TOKEN}"
+      TWILIO_WHATSAPP_NUMBER: "${TWILIO_WHATSAPP_NUMBER}"
+      MONGODB_URL: "${WHATSAPP_MONGODB_URL}"
+      MONGODB_DATABASE: "${WHATSAPP_MONGODB_DATABASE:-WhatsappChat24hrs}"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - app-network

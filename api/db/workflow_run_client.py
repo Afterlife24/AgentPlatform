@@ -157,7 +157,8 @@ class WorkflowRunClient(BaseDBClient):
             base_query = apply_workflow_run_filters(base_query, filters)
 
             # Count total with filters
-            count_query = base_query.with_only_columns(func.count(WorkflowRunModel.id))
+            count_query = base_query.with_only_columns(
+                func.count(WorkflowRunModel.id))
             count_result = await session.execute(count_query)
             total_count = count_result.scalar()
 
@@ -251,7 +252,8 @@ class WorkflowRunClient(BaseDBClient):
             result = await session.execute(
                 select(WorkflowRunModel)
                 .options(
-                    joinedload(WorkflowRunModel.workflow).joinedload(WorkflowModel.user)
+                    joinedload(WorkflowRunModel.workflow).joinedload(
+                        WorkflowModel.user)
                 )
                 .where(WorkflowRunModel.id == run_id)
             )
@@ -305,7 +307,8 @@ class WorkflowRunClient(BaseDBClient):
             base_query = apply_workflow_run_filters(base_query, filters)
 
             # Count total with filters
-            count_query = base_query.with_only_columns(func.count(WorkflowRunModel.id))
+            count_query = base_query.with_only_columns(
+                func.count(WorkflowRunModel.id))
             count_result = await session.execute(count_query)
             total_count = count_result.scalar()
 
@@ -455,7 +458,8 @@ class WorkflowRunClient(BaseDBClient):
         """
         async with self.async_session() as session:
             result = await session.execute(
-                select(WorkflowRunModel).where(WorkflowRunModel.id == workflow_run_id)
+                select(WorkflowRunModel).where(
+                    WorkflowRunModel.id == workflow_run_id)
             )
             run = result.scalars().first()
             if not run:
@@ -514,12 +518,71 @@ class WorkflowRunClient(BaseDBClient):
             result = await session.execute(
                 select(WorkflowRunModel)
                 .options(
-                    joinedload(WorkflowRunModel.workflow).joinedload(WorkflowModel.user)
+                    joinedload(WorkflowRunModel.workflow).joinedload(
+                        WorkflowModel.user)
                 )
                 .where(
-                    WorkflowRunModel.gathered_context.op("->>")("call_id") == call_id
+                    WorkflowRunModel.gathered_context.op(
+                        "->>")("call_id") == call_id
                 )
                 .order_by(WorkflowRunModel.created_at.desc())
                 .limit(1)
             )
+            return result.scalars().first()
+
+    async def get_workflow_run_by_annotation(
+        self,
+        *,
+        workflow_id: int,
+        organization_id: int,
+        annotation_key: str,
+        annotation_value: Dict[str, Any],
+        mode: str | None = None,
+        completed: bool | None = None,
+    ) -> Optional[WorkflowRunModel]:
+        """Find a workflow run by a specific annotation key/value.
+
+        Used by the public text-chat API to look up existing sessions
+        by session_key stored in annotations.
+
+        Args:
+            workflow_id: The workflow ID to scope the search
+            organization_id: Organization scope
+            annotation_key: Top-level key in annotations JSON (e.g. "public_text_chat")
+            annotation_value: Dict that must be a subset of annotations[key]
+            mode: Optional filter on workflow run mode
+            completed: Optional filter on is_completed
+
+        Returns:
+            The most recent matching WorkflowRunModel, or None
+        """
+        async with self.async_session() as session:
+            query = (
+                select(WorkflowRunModel)
+                .join(WorkflowRunModel.workflow)
+                .where(
+                    WorkflowRunModel.workflow_id == workflow_id,
+                    WorkflowModel.organization_id == organization_id,
+                )
+            )
+
+            # Filter by annotation content using JSON text extraction.
+            # The annotations column is JSON (not JSONB), so we use ->> path
+            # extraction instead of @> containment.
+            # For our use case, we look up: annotations->'public_text_chat'->>'session_key'
+            for key, value in annotation_value.items():
+                query = query.where(
+                    WorkflowRunModel.annotations[annotation_key][key].as_string(
+                    )
+                    == str(value)
+                )
+
+            if mode is not None:
+                query = query.where(WorkflowRunModel.mode == mode)
+            if completed is not None:
+                query = query.where(WorkflowRunModel.is_completed == completed)
+
+            query = query.order_by(WorkflowRunModel.created_at.desc()).limit(1)
+
+            result = await session.execute(query)
             return result.scalars().first()

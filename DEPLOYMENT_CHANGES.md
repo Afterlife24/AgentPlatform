@@ -8,22 +8,23 @@ This file documents the Git structure, deployment setup, and every custom change
 
 ### Remotes
 
-| Remote name | URL | Purpose |
-|---|---|---|
-| `origin` | `https://github.com/Afterlife24/AgentPlatform.git` | **Our repo.** We push here. This is what gets deployed. |
-| `upstream` | `https://github.com/dograh-hq/dograh.git` | **Official Dograh repo.** We only pull from here, never push. |
+| Remote name | URL                                                | Purpose                                                       |
+| ----------- | -------------------------------------------------- | ------------------------------------------------------------- |
+| `origin`    | `https://github.com/Afterlife24/AgentPlatform.git` | **Our repo.** We push here. This is what gets deployed.       |
+| `upstream`  | `https://github.com/dograh-hq/dograh.git`          | **Official Dograh repo.** We only pull from here, never push. |
 
 Check anytime with:
+
 ```bash
 git remote -v
 ```
 
 ### Branch strategy
 
-| Branch | Purpose | Deployed to |
-|---|---|---|
-| `main` | Production-ready code only | Production EC2 instance |
-| `develop` | Integration/testing branch | Dev/staging EC2 instance |
+| Branch           | Purpose                                                          | Deployed to                                    |
+| ---------------- | ---------------------------------------------------------------- | ---------------------------------------------- |
+| `main`           | Production-ready code only                                       | Production EC2 instance                        |
+| `develop`        | Integration/testing branch                                       | Dev/staging EC2 instance                       |
 | feature branches | Individual features or upstream syncs, e.g. `sync/upstream-main` | Local testing only, then merged into `develop` |
 
 **Flow:** feature branch → tested locally → merged into `develop` → tested on the dev EC2 instance (load testing, live testing, etc.) → merged into `main` → deployed to production EC2.
@@ -48,15 +49,16 @@ git merge upstream/main        # do this on a feature branch first, not directly
 
 **The fix — split the config into two files:**
 
-| File | Who owns it | Committed to git? |
-|---|---|---|
-| `docker-compose.yaml` | **Dograh (upstream).** We never hand-edit this. Always kept identical to `upstream/main`. | Yes |
-| `docker-compose.override.yaml` | **Us.** Contains only our local-only additions (currently: the `nginx-local` proxy service on port 3000). | Yes |
-| `.env` | **Us, per-machine.** Secrets and endpoint URLs. Different values possible on your machine vs. EC2. | **No — gitignored** |
+| File                           | Who owns it                                                                                               | Committed to git?   |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------- | ------------------- |
+| `docker-compose.yaml`          | **Dograh (upstream).** We never hand-edit this. Always kept identical to `upstream/main`.                 | Yes                 |
+| `docker-compose.override.yaml` | **Us.** Contains only our local-only additions (currently: the `nginx-local` proxy service on port 3000). | Yes                 |
+| `.env`                         | **Us, per-machine.** Secrets and endpoint URLs. Different values possible on your machine vs. EC2.        | **No — gitignored** |
 
 **How the override works:** Docker Compose automatically looks for a file literally named `docker-compose.override.yaml` in the same folder and merges it on top of `docker-compose.yaml` — no `-f` flag, no extra command. Running `docker compose up` picks up both files as one combined config. Think of `docker-compose.yaml` as Dograh's recipe card, and `docker-compose.override.yaml` as our sticky note on top of it — we never write on their card, so it never conflicts with their revisions.
 
 **What this achieves:**
+
 - `docker-compose.yaml` stays byte-for-byte identical to upstream at all times → `git merge upstream/main` is clean on this file
 - `docker-compose.override.yaml` doesn't exist in Dograh's repo at all → nothing to conflict with, ever
 - The only realistic future conflict scenario: Dograh renames a service our override depends on (`ui`, `api`) — rare, and git will clearly flag it as "this service no longer exists," not a silent content conflict
@@ -67,18 +69,20 @@ git merge upstream/main        # do this on a feature branch first, not directly
 
 ## 3. Current File State (Quick Reference)
 
-| File | Status | Notes |
-|---|---|---|
-| `docker-compose.yaml` | Identical to `upstream/main` | Do not edit directly |
-| `docker-compose.override.yaml` | Custom, ours | Contains `nginx-local` service (port 3000 → 80, proxies to `ui:3010` / `api:8000`) |
-| `.env` | Custom, ours, **not in git** | Contains `OSS_JWT_SECRET`, `BACKEND_API_ENDPOINT=http://api:8000`, `MINIO_PUBLIC_ENDPOINT=http://localhost:9000` |
-| `nginx-local.conf` | Custom, ours | Used by `nginx-local` service in the override file |
-| `LOCAL_SETUP.md` | Custom, ours | Windows local setup instructions |
+| File                           | Status                       | Notes                                                                                                            |
+| ------------------------------ | ---------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `docker-compose.yaml`          | Identical to `upstream/main` | Do not edit directly                                                                                             |
+| `docker-compose.override.yaml` | Custom, ours                 | Contains `nginx-local` service (port 3000 → 80, proxies to `ui:3010` / `api:8000`)                               |
+| `.env`                         | Custom, ours, **not in git** | Contains `OSS_JWT_SECRET`, `BACKEND_API_ENDPOINT=http://api:8000`, `MINIO_PUBLIC_ENDPOINT=http://localhost:9000` |
+| `nginx-local.conf`             | Custom, ours                 | Used by `nginx-local` service in the override file                                                               |
+| `LOCAL_SETUP.md`               | Custom, ours                 | Windows local setup instructions                                                                                 |
 
 **Local dev command — unchanged throughout all of this:**
+
 ```bash
 docker compose up
 ```
+
 Always access the app at **http://localhost:3000** (not 3010 — see LOCAL_SETUP.md for why).
 
 ---
@@ -87,13 +91,15 @@ Always access the app at **http://localhost:3000** (not 3010 — see LOCAL_SETUP
 
 ### Change 1: Cloudflared made optional (2026-06-30)
 
-**File changed:** `docker-compose.yaml` *(superseded by Change 2 below — upstream now handles this natively)*
+**File changed:** `docker-compose.yaml` _(superseded by Change 2 below — upstream now handles this natively)_
 
 **What was done:**
+
 1. Added a profile restriction to the `cloudflared` service so it doesn't start by default
 2. Removed `cloudflared` from the `api` service's `depends_on` list
 
 **Why:**
+
 - Cloudflared creates a random public tunnel URL on every startup
 - On EC2 (production), nginx + SSL handles this — cloudflared isn't needed
 - The API had a hard dependency on cloudflared; if Cloudflare was unreachable, the whole stack failed to start
@@ -106,11 +112,12 @@ Always access the app at **http://localhost:3000** (not 3010 — see LOCAL_SETUP
 ### Change 2: Moved local customizations to docker-compose.override.yaml (2026-07-04)
 
 **Files changed:**
+
 - `docker-compose.yaml` — reset to be byte-for-byte identical to `upstream/main`
 - `docker-compose.override.yaml` — new file, contains the `nginx-local` service
 - `.env` — added `BACKEND_API_ENDPOINT` and `MINIO_PUBLIC_ENDPOINT` explicitly (upstream removed their old localhost defaults)
 
-**Why:** See section 2 above — this change *is* the override pattern being introduced.
+**Why:** See section 2 above — this change _is_ the override pattern being introduced.
 
 **Verified before this change:** upstream's own fixes for cloudflared and the UI healthcheck (`http://127.0.0.1:3010`) already matched what we'd patched manually, so resetting to their file didn't reintroduce old bugs.
 
@@ -127,6 +134,7 @@ Always access the app at **http://localhost:3000** (not 3010 — see LOCAL_SETUP
 **Fix (attempted, then reverted — see Change 4):** Changed `BACKEND_API_ENDPOINT` in `.env` from `http://localhost:8000` to `http://api:8000` (the Docker-internal hostname). This fixed the health-check delay but broke actual app functionality — see Change 4 below. **Do not repeat this fix.**
 
 **Verification command (for the health-check timing itself):**
+
 ```bash
 docker exec dograh-api-1 python -c "
 import urllib.request, time
@@ -147,7 +155,6 @@ print('Took:', time.time() - start, 'seconds')
 - Always run `scripts/setup_remote.sh` on the EC2 instance before starting — it replaces all localhost references with the server's public IP and handles TLS/TURN config.
 - Never commit `.env` — it's gitignored by design, and contains secrets that differ per environment (local / dev EC2 / prod EC2).
 
-
 ---
 
 ### Change 4: Reverted Change 3 — BACKEND_API_ENDPOINT must stay "localhost" (2026-07-04)
@@ -155,6 +162,7 @@ print('Took:', time.time() - start, 'seconds')
 **File changed:** `.env` (local only, gitignored, never committed)
 
 **Symptom after Change 3:** Creating/opening agents failed completely. Browser console showed:
+
 ```
 GET http://api:8000/api/v1/workflow/fetch/1 net::ERR_NAME_NOT_RESOLVED
 GET http://api:8000/api/v1/user/onboarding-state net::ERR_NAME_NOT_RESOLVED
@@ -175,10 +183,10 @@ POST http://api:8000/api/v1/workflow/create/template net::ERR_NAME_NOT_RESOLVED
 
 Two long-lived EC2 instances, one per branch, replacing the earlier Frankfurt (eu-central-1) attempt which was torn down entirely (instance, security group, key pair all deleted — nothing to migrate from there).
 
-| Environment | Branch | Instance type | Public URL | Server IP |
-|---|---|---|---|---|
-| Develop | `develop` | t3.large, 15 GB gp3 | `https://devagents.autonomiq.ae` | `3.108.185.4` |
-| Main (prod) | `main` | t3.large, 30 GB gp3 | `https://mainagents.autonomiq.ae` | `13.203.227.111` |
+| Environment | Branch    | Instance type       | Public URL                        | Server IP        |
+| ----------- | --------- | ------------------- | --------------------------------- | ---------------- |
+| Develop     | `develop` | t3.large, 15 GB gp3 | `https://devagents.autonomiq.ae`  | `3.108.185.4`    |
+| Main (prod) | `main`    | t3.large, 30 GB gp3 | `https://mainagents.autonomiq.ae` | `13.203.227.111` |
 
 Both provisioned in `ap-south-1`, security group: SSH restricted to a single office/home IP (`/32`), HTTP (80) and HTTPS (443) open to `0.0.0.0/0`. TURN/STUN ports (3478, 5349, 49152–49200) are **not** opened at the security-group level yet — only add them once voice-call testing actually needs them, per the "don't open ports until required" rule we've followed throughout.
 
@@ -197,11 +205,13 @@ Both provisioned in `ap-south-1`, security group: SSH restricted to a single off
 **Root cause:** The OSS auth middleware redirects any unauthenticated request to `/auth/login`, using a `PUBLIC_PATHS` allowlist (`/auth/login`, `/auth/signup`) to skip that check for the login pages themselves. `/embed/dograh-widget.js` wasn't in that allowlist — so anonymous visitors on a third-party site (who obviously have no Dograh login cookie) got redirected to a login page instead of the JS file. This defeats the entire purpose of an embeddable widget.
 
 **Fix:**
+
 ```ts
-const PUBLIC_PATHS = ['/auth/login', '/auth/signup', '/embed'];
+const PUBLIC_PATHS = ["/auth/login", "/auth/signup", "/embed"];
 ```
 
 **Verification:**
+
 ```bash
 curl -s -D - -o /dev/null http://localhost:3010/embed/dograh-widget.js
 # must return 200, not 307
@@ -220,6 +230,7 @@ curl -s -D - -o /dev/null http://localhost:3010/embed/dograh-widget.js
 **Root cause:** `setup_remote.sh` in prebuilt mode pulls `dograhai/dograh-ui:latest` — Dograh's own official image on Docker Hub, built from **their** repo, not our fork. Merging a fix into our `main` branch on GitHub has zero effect on that Docker Hub image; only Dograh publishing a new image would change it, and our patch obviously isn't in their codebase. Any future deploy that does a plain `--pull always` (the prebuilt default) silently reverts to the unpatched image.
 
 **Fix:** Added a `ui` build override so `ui` is always built from our fork's source instead of pulled:
+
 ```yaml
 services:
   ui:
@@ -229,12 +240,15 @@ services:
     image: dograh-local/dograh-ui:local
     pull_policy: never
 ```
+
 `api` is untouched and still pulls the prebuilt tag — our patch only touches `ui/`.
 
 **Rule going forward:** every deploy (manual or CI) must run
+
 ```bash
 docker compose --profile remote up -d --build
 ```
+
 using `--build`, **never** `--pull always`. Because this directive lives in the committed `docker-compose.override.yaml`, any environment that runs `git pull` + the command above automatically stays patched — no manual step required per deploy. This is also why Section 6's "run from the real git clone, not the nested upstream-downloaded folder" fix matters: the override only takes effect if Compose is actually invoked from a directory that has this file.
 
 ---
@@ -245,12 +259,13 @@ using `--build`, **never** `--pull always`. Because this directive lives in the 
 
 **Records added** (simple `A` records, no alias, TTL 300):
 
-| Record | Value |
-|---|---|
-| `devagents.autonomiq.ae` | `3.108.185.4` |
+| Record                    | Value            |
+| ------------------------- | ---------------- |
+| `devagents.autonomiq.ae`  | `3.108.185.4`    |
 | `mainagents.autonomiq.ae` | `13.203.227.111` |
 
 **Per-server steps after adding the DNS record** (this is what Dograh's own `scripts/setup_custom_domain.sh` automates, done manually here since the instances were already running):
+
 1. Update `.env`: `PUBLIC_HOST=<domain>`, `PUBLIC_BASE_URL=https://<domain>` (leave `SERVER_IP` as the raw IP — coturn needs it).
 2. Regenerate the bootstrap self-signed cert for the new CN, recreate `api`/`nginx` so the API picks up the new `PUBLIC_HOST`.
 3. `sudo certbot certonly --webroot -w certs -d <domain> ...` for a real Let's Encrypt cert, then copy `fullchain.pem`/`privkey.pem` into `certs/local.crt`/`certs/local.key` and restart `nginx_https`.
@@ -268,6 +283,7 @@ The original sslip.io URLs (`15-207-85-16.sslip.io`, `13-203-227-111.sslip.io`, 
 **Trigger:** `push` to `develop` or `main` only — i.e. fires when a PR is merged into the branch, not on every commit inside an open PR. Matches the intended flow: feature branch → PR (reviewed/approved) → merged into `develop` → manual testing on devagents → merged into `main` → auto-deployed to prod.
 
 **What it does, per branch:**
+
 ```bash
 cd /home/ubuntu/dograh
 git fetch origin
@@ -275,6 +291,7 @@ git checkout <branch>
 git reset --hard origin/<branch>
 sudo docker compose --profile remote up -d --build
 ```
+
 `git reset --hard` guarantees the server exactly matches GitHub, no drift from any manual SSH edits. Safe because `.env` and `certs/` are gitignored/untracked — `reset --hard` never touches untracked files.
 
 **Runs synchronously** — the job blocks until the `--build` step finishes (several minutes for a `ui` rebuild), so pass/fail is visible in the Actions tab before the workflow completes, not fire-and-forget.
@@ -289,17 +306,19 @@ The first version of this workflow SSHed from GitHub's own hosted runners into e
 
 A GitHub Actions runner is installed as a **systemd service** directly on each EC2 instance (`/home/ubuntu/actions-runner`). It polls GitHub over an outbound connection for jobs — no inbound access from GitHub is ever needed, so the security group is completely untouched.
 
-| Instance | Runner name | Label |
-|---|---|---|
-| develop | `dograh-develop-runner` | `develop` |
-| main | `dograh-main-runner` | `main` |
+| Instance | Runner name             | Label     |
+| -------- | ----------------------- | --------- |
+| develop  | `dograh-develop-runner` | `develop` |
+| main     | `dograh-main-runner`    | `main`    |
 
 The workflow targets the matching runner by label:
+
 ```yaml
 runs-on: [self-hosted, "${{ github.ref_name }}"]
 ```
 
 **Setup steps (for reference / replacing an instance later):**
+
 ```bash
 # Generate a fresh single-use registration token (repo admin, via gh CLI or API):
 gh api -X POST repos/Afterlife24/AgentPlatform/actions/runners/registration-token --jq .token
@@ -317,7 +336,131 @@ sudo ./svc.sh start
 **Repository secrets** (`Settings → Secrets and variables → Actions`) from the earlier SSH-based attempt (`DEV_SSH_KEY`, `MAIN_SSH_KEY`, `DEV_HOST`, `MAIN_HOST`) are no longer used by the workflow but were left in place rather than deleted — harmless, and saves re-adding them if a future change needs direct SSH again.
 
 **Verifying a runner is online:**
+
 ```bash
 gh api repos/Afterlife24/AgentPlatform/actions/runners
 # status should be "online" for both dograh-develop-runner and dograh-main-runner
 ```
+
+---
+
+## 11. Build API from source + ARQ worker service (2026-07-09)
+
+**Files changed:**
+
+- `docker-compose.override.yaml` — added `api` and `arq-worker` build overrides
+- `docker-compose.yaml` — added `arq-worker` service definition
+- `ui/Dockerfile` — reduced Node heap from 4096 MB to 2048 MB
+
+### Problem 1: UI build OOM in Docker
+
+**Symptom:** `docker compose up --build` failed during the Next.js production build:
+
+```
+process "npm run build" did not complete successfully: cannot allocate memory
+```
+
+**Root cause:** `NODE_OPTIONS="--max-old-space-size=4096"` in `ui/Dockerfile` requested 4 GB for the webpack build. Combined with other containers building concurrently, Docker Desktop didn't have enough memory.
+
+**Fix:** Reduced to 2048 MB:
+
+```dockerfile
+ENV NODE_OPTIONS="--max-old-space-size=2048"
+```
+
+---
+
+### Problem 2: Public text-chat routes missing (404)
+
+**Symptom:** The WhatsApp adapter calling `POST /api/v1/public/agent/text-chat/test/workflow/{trigger}/message` always got `{"detail":"Not Found"}`. Checking the OpenAPI spec confirmed the routes weren't registered.
+
+**Root cause:** `docker-compose.yaml` pulls `dograhai/dograh-api:latest` — the official upstream prebuilt image. Our fork adds `api/routes/public_text_chat.py` (the public text-chat API for WhatsApp/SMS), but that code isn't in upstream's image. Same pattern as Change 8 (UI patches lost when pulling prebuilt image).
+
+**Fix:** Added API build override in `docker-compose.override.yaml`:
+
+```yaml
+services:
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: dograh-local/dograh-api:local
+    pull_policy: never
+
+  arq-worker:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: dograh-local/dograh-api:local
+    pull_policy: never
+```
+
+---
+
+### Problem 3: ARQ worker not in Docker Compose
+
+**Symptom:** Background jobs (knowledge base processing, webhooks) never ran. Had to start the worker manually:
+
+```bash
+source .venv/bin/activate && python -m arq api.tasks.arq.WorkerSettings
+```
+
+**Root cause:** `docker-compose.yaml` only defines the API HTTP server (`uvicorn`), not the ARQ background worker process.
+
+**Fix:** Added `arq-worker` service to `docker-compose.yaml` that reuses the API image with a different command:
+
+```yaml
+arq-worker:
+  image: ${REGISTRY:-dograhai}/dograh-api:latest
+  command: ["python", "-m", "arq", "api.tasks.arq.WorkerSettings"]
+  # ... same env vars as the api service ...
+  depends_on:
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+    minio: { condition: service_healthy }
+```
+
+**Note:** This is one of the rare exceptions to the "never edit docker-compose.yaml" rule (Section 2). The ARQ worker is infrastructure we need regardless of upstream — it's not a local-only customization. If upstream adds their own worker service later, `git merge upstream/main` will flag a conflict on this block, which we'll resolve by taking upstream's version (likely identical or better). The override file then ensures it builds from source via the `arq-worker` block above.
+
+---
+
+### Commands (local dev)
+
+```bash
+cd AgentPlatform
+docker compose down
+docker compose up --build
+```
+
+- `--build` is **required** — forces Docker to rebuild the `api` and `ui` images from our fork's source code, picking up any local patches not in the upstream prebuilt images.
+- Without `--build`, Docker reuses cached images which may be stale/prebuilt.
+- Access the app at **http://localhost:3000** (via nginx-local proxy).
+- API available at **http://localhost:8000**.
+- Verify public text-chat route exists:
+  ```bash
+  curl http://localhost:8000/api/v1/openapi.json 2>/dev/null | \
+    python3 -c "import sys,json; paths=json.load(sys.stdin)['paths']; [print(p) for p in paths if 'text-chat' in p]"
+  # Should show /api/v1/public/agent/text-chat/... routes
+  ```
+
+### Commands (EC2 deploy)
+
+```bash
+cd /home/ubuntu/dograh
+git fetch origin
+git checkout <branch>
+git reset --hard origin/<branch>
+sudo docker compose --profile remote up -d --build
+```
+
+Same `--build` flag ensures EC2 also builds from source. The CI workflow (`.github/workflows/deploy-ec2.yml`) already uses `--build`.
+
+---
+
+### Updated Section 3 addendum
+
+| File                           | Status                          | Notes                                                          |
+| ------------------------------ | ------------------------------- | -------------------------------------------------------------- |
+| `docker-compose.yaml`          | **Modified** (arq-worker added) | Exception to the no-edit rule — see note above                 |
+| `docker-compose.override.yaml` | Custom, ours                    | Now also overrides `api` and `arq-worker` to build from source |
+| `ui/Dockerfile`                | Modified                        | `--max-old-space-size` reduced from 4096 to 2048               |
