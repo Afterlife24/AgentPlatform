@@ -66,16 +66,25 @@ services:
     image: dograh-local/dograh-api:local
     pull_policy: never
 
+  # NEXT_PUBLIC_BACKEND_URL is baked into the Next.js build at build time (it's
+  # a NEXT_PUBLIC_ var, inlined into the browser JS bundle) — it can't be
+  # swapped at runtime like a normal env var. Defaults to the local nginx-local
+  # proxy (port 3000) for Windows/local dev, but MUST be overridden to the
+  # real public URL for any remote deployment (set NEXT_PUBLIC_BACKEND_URL in
+  # .env to https://<your-domain-or-sslip-host>), or every browser API call
+  # silently targets a nonexistent localhost:3000 on the server and login/
+  # signup appears to work but never actually authenticates (401s on every
+  # subsequent call, e.g. /workflow/fetch).
   ui:
     build:
       context: .
       dockerfile: ui/Dockerfile
       args:
-        - NEXT_PUBLIC_BACKEND_URL=http://localhost:3000
+        - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:3000}
     image: dograh-local/dograh-ui:local
     pull_policy: never
     environment:
-      NEXT_PUBLIC_BACKEND_URL: "http://localhost:3000"
+      NEXT_PUBLIC_BACKEND_URL: "${NEXT_PUBLIC_BACKEND_URL:-http://localhost:3000}"
 
   # WhatsApp adapter — Twilio WhatsApp webhooks routed via nginx at /whatsapp
   #
