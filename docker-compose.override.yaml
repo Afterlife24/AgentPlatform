@@ -78,9 +78,15 @@ services:
       NEXT_PUBLIC_BACKEND_URL: "http://localhost:3000"
 
   # WhatsApp adapter — Twilio WhatsApp webhooks routed via nginx at /whatsapp
+  #
+  # NOTE: context path casing must match the actual sibling folder name
+  # exactly (../Whatsapp_Adapter). Windows filesystems are case-insensitive
+  # so "../whatsapp_adapter" resolves fine locally, but this stack also runs
+  # on Linux EC2 in production, where the filesystem IS case-sensitive and a
+  # mismatched path fails the build outright ("path not found").
   whatsapp-adapter:
     build:
-      context: ../whatsapp_adapter
+      context: ../Whatsapp_Adapter
       dockerfile: Dockerfile
     container_name: whatsapp_adapter
     environment:
