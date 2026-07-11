@@ -16,9 +16,30 @@
 # through port 3010 directly).
 
 services:
+  # Auto-restart every long-running service after a Docker daemon restart
+  # (e.g. `docker compose up` was never re-run manually) or an EC2
+  # stop/start cycle. Without this, only `coturn` (set in the upstream base
+  # file) comes back on its own — every other container stays "Exited" until
+  # someone SSHes in and runs `docker compose --profile remote up -d` by
+  # hand. `dograh-init` is intentionally excluded: it's a one-shot config
+  # renderer that's supposed to exit 0 after running once: giving it a
+  # restart policy would just make it loop forever.
+  postgres:
+    restart: unless-stopped
+
+  redis:
+    restart: unless-stopped
+
+  minio:
+    restart: unless-stopped
+
+  nginx:
+    restart: unless-stopped
+
   nginx-local:
     image: nginx:alpine
     container_name: nginx_local
+    restart: unless-stopped
     depends_on:
       ui:
         condition: service_started
@@ -52,6 +73,7 @@ services:
       dockerfile: api/Dockerfile
     image: dograh-local/dograh-api:local
     pull_policy: never
+    restart: unless-stopped
     # Mount the local startup script and use it as the entrypoint
     # (adds --proxy-headers to uvicorn for Twilio signature validation behind nginx)
     volumes:
@@ -65,6 +87,7 @@ services:
       dockerfile: api/Dockerfile
     image: dograh-local/dograh-api:local
     pull_policy: never
+    restart: unless-stopped
 
   # NEXT_PUBLIC_BACKEND_URL is baked into the Next.js build at build time (it's
   # a NEXT_PUBLIC_ var, inlined into the browser JS bundle) — it can't be
@@ -83,6 +106,7 @@ services:
         - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:3000}
     image: dograh-local/dograh-ui:local
     pull_policy: never
+    restart: unless-stopped
     environment:
       NEXT_PUBLIC_BACKEND_URL: "${NEXT_PUBLIC_BACKEND_URL:-http://localhost:3000}"
 
@@ -98,6 +122,7 @@ services:
       context: ../Whatsapp_Adapter
       dockerfile: Dockerfile
     container_name: whatsapp_adapter
+    restart: unless-stopped
     environment:
       # Inside Docker, the Dograh API is reachable at http://api:8000
       DOGRAH_API_BASE: "http://api:8000/api/v1"
