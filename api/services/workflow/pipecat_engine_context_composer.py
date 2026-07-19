@@ -12,6 +12,9 @@ if TYPE_CHECKING:
 
 from api.services.workflow.pipecat_engine_custom_tools import get_function_schema
 from api.services.workflow.tools.knowledge_base import get_knowledge_base_tool
+from api.services.workflow.tools.knowledge_base_filter import get_knowledge_base_filter_tool
+from api.services.workflow.tools.knowledge_base_aggregate import get_knowledge_base_aggregate_tool
+from api.db import db_client
 
 # ---------------------------------------------------------------------------
 # Recording response mode markers
@@ -87,6 +90,7 @@ async def compose_functions_for_node(
     *,
     node: "Node",
     custom_tool_manager: Optional["CustomToolManager"],
+    organization_id: Optional[int] = None,
 ) -> list[dict]:
     """Compose the function/tool schemas for a workflow node.
 
@@ -97,6 +101,7 @@ async def compose_functions_for_node(
     Args:
         node: The workflow node to compose functions for.
         custom_tool_manager: Manager for custom and built-in tools (may be None).
+        organization_id: Organization ID for fetching dynamic metadata fields.
 
     Returns:
         A list of function schemas to register with the LLM.
@@ -109,10 +114,52 @@ async def compose_functions_for_node(
         kb_schema = get_function_schema(
             kb_tool_def["function"]["name"],
             kb_tool_def["function"]["description"],
-            properties=kb_tool_def["function"]["parameters"].get("properties", {}),
+            properties=kb_tool_def["function"]["parameters"].get(
+                "properties", {}),
             required=kb_tool_def["function"]["parameters"].get("required", []),
         )
         functions.append(kb_schema)
+
+        # Metadata filter tool (for exact/enumeration queries)
+        # Dynamically discover available fields from the actual data
+        available_fields = None
+        if organization_id:
+            try:
+                available_fields = await db_client.get_metadata_fields_for_org(
+                    organization_id=organization_id,
+                    document_uuids=node.document_uuids,
+                )
+            except Exception:
+                pass  # Fall back to default fields hint
+
+        kb_filter_def = get_knowledge_base_filter_tool(
+            node.document_uuids,
+            available_metadata_fields=available_fields,
+        )
+        kb_filter_schema = get_function_schema(
+            kb_filter_def["function"]["name"],
+            kb_filter_def["function"]["description"],
+            properties=kb_filter_def["function"]["parameters"].get(
+                "properties", {}),
+            required=kb_filter_def["function"]["parameters"].get(
+                "required", []),
+        )
+        functions.append(kb_filter_schema)
+
+        # Aggregation tool (for count/avg/max/min/group by queries)
+        kb_agg_def = get_knowledge_base_aggregate_tool(
+            node.document_uuids,
+            available_metadata_fields=available_fields,
+        )
+        kb_agg_schema = get_function_schema(
+            kb_agg_def["function"]["name"],
+            kb_agg_def["function"]["description"],
+            properties=kb_agg_def["function"]["parameters"].get(
+                "properties", {}),
+            required=kb_agg_def["function"]["parameters"].get(
+                "required", []),
+        )
+        functions.append(kb_agg_schema)
 
     # Custom tools
     if node.tool_uuids and custom_tool_manager:

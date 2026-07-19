@@ -53,6 +53,12 @@ from api.services.workflow.pipecat_engine_variable_extractor import (
 from api.services.workflow.tools.knowledge_base import (
     retrieve_from_knowledge_base,
 )
+from api.services.workflow.tools.knowledge_base_filter import (
+    filter_knowledge_base,
+)
+from api.services.workflow.tools.knowledge_base_aggregate import (
+    aggregate_knowledge_base,
+)
 from api.utils.template_renderer import render_template
 
 
@@ -68,7 +74,8 @@ class PipecatEngine:
         call_context_vars: dict,
         workflow_run_id: Optional[int] = None,
         node_transition_callback: Optional[
-            Callable[[str, str, Optional[str], Optional[str], bool], Awaitable[None]]
+            Callable[[str, str, Optional[str],
+                      Optional[str], bool], Awaitable[None]]
         ] = None,
         embeddings_api_key: Optional[str] = None,
         embeddings_model: Optional[str] = None,
@@ -195,7 +202,8 @@ class PipecatEngine:
 
             # Helper that encapsulates context summarization
             if self._context_compaction_enabled:
-                self._context_summarization_manager = ContextSummarizationManager(self)
+                self._context_summarization_manager = ContextSummarizationManager(
+                    self)
 
             logger.debug(f"{self.__class__.__name__} initialized")
         except Exception as e:
@@ -270,7 +278,8 @@ class PipecatEngine:
                             f"Failed to fetch transition audio {transition_speech_recording_id}"
                         )
                 elif transition_speech:
-                    logger.info(f"Playing transition speech: {transition_speech}")
+                    logger.info(
+                        f"Playing transition speech: {transition_speech}")
                     self._queued_speech_mute_state = "waiting"
                     await self.task.queue_frame(
                         TTSSpeakFrame(
@@ -359,7 +368,8 @@ class PipecatEngine:
         )
 
         async def retrieve_kb_func(function_call_params: FunctionCallParams) -> None:
-            logger.info("LLM Function Call EXECUTED: retrieve_from_knowledge_base")
+            logger.info(
+                "LLM Function Call EXECUTED: retrieve_from_knowledge_base")
             logger.info(f"Arguments: {function_call_params.arguments}")
 
             try:
@@ -375,7 +385,7 @@ class PipecatEngine:
                     query=query,
                     organization_id=organization_id,
                     document_uuids=document_uuids,
-                    limit=3,  # Return top 3 most relevant chunks
+                    limit=8,  # Return top 8 most relevant chunks
                     embeddings_api_key=self._embeddings_api_key,
                     embeddings_model=self._embeddings_model,
                     embeddings_base_url=self._embeddings_base_url,
@@ -393,11 +403,113 @@ class PipecatEngine:
             except Exception as e:
                 logger.error(f"Knowledge base retrieval failed: {e}")
                 await function_call_params.result_callback(
-                    {"error": str(e), "chunks": [], "query": query, "total_results": 0}
+                    {"error": str(e), "chunks": [],
+                     "query": query, "total_results": 0}
                 )
 
         # Register the function with the LLM
-        self.llm.register_function("retrieve_from_knowledge_base", retrieve_kb_func)
+        self.llm.register_function(
+            "retrieve_from_knowledge_base", retrieve_kb_func)
+
+    async def _register_knowledge_base_filter_function(
+        self, document_uuids: list[str]
+    ) -> None:
+        """Register knowledge base metadata filter function with the LLM.
+
+        This enables the LLM to perform exact-match and comparison queries
+        on structured metadata (e.g., "list all Terex cranes above 500 tons").
+
+        Args:
+            document_uuids: List of document UUIDs to scope the filter.
+        """
+        logger.debug(
+            f"Registering knowledge base filter function with "
+            f"{len(document_uuids)} document(s)"
+        )
+
+        async def filter_kb_func(function_call_params: FunctionCallParams) -> None:
+            logger.info("LLM Function Call EXECUTED: filter_knowledge_base")
+            logger.info(f"Arguments: {function_call_params.arguments}")
+
+            try:
+                filters = function_call_params.arguments.get("filters", {})
+                limit = function_call_params.arguments.get("limit", 20)
+                organization_id = await self._get_organization_id()
+
+                if not organization_id:
+                    raise ValueError(
+                        "Organization ID not available for knowledge base filter"
+                    )
+
+                result = await filter_knowledge_base(
+                    organization_id=organization_id,
+                    document_uuids=document_uuids,
+                    filters=filters,
+                    limit=limit,
+                    correlation_id=self._call_context_vars.get(
+                        MPS_CORRELATION_ID_CONTEXT_KEY
+                    ),
+                    tracing_context=self._get_otel_context(),
+                )
+
+                await function_call_params.result_callback(result)
+
+            except Exception as e:
+                logger.error(f"Knowledge base filter failed: {e}")
+                await function_call_params.result_callback(
+                    {
+                        "error": str(e),
+                        "results": [],
+                        "filters_applied": {},
+                        "total_results": 0,
+                    }
+                )
+
+        self.llm.register_function("filter_knowledge_base", filter_kb_func)
+
+    async def _register_knowledge_base_aggregate_function(
+        self, document_uuids: list[str]
+    ) -> None:
+        """Register knowledge base aggregation function with the LLM."""
+        logger.debug(
+            f"Registering knowledge base aggregate function with "
+            f"{len(document_uuids)} document(s)"
+        )
+
+        async def aggregate_kb_func(function_call_params: FunctionCallParams) -> None:
+            logger.info("LLM Function Call EXECUTED: aggregate_knowledge_base")
+            logger.info(f"Arguments: {function_call_params.arguments}")
+
+            try:
+                args = function_call_params.arguments
+                organization_id = await self._get_organization_id()
+
+                if not organization_id:
+                    raise ValueError(
+                        "Organization ID not available for knowledge base aggregation"
+                    )
+
+                result = await aggregate_knowledge_base(
+                    organization_id=organization_id,
+                    document_uuids=document_uuids,
+                    group_by=args.get("group_by"),
+                    aggregate_field=args.get("aggregate_field"),
+                    aggregate_function=args.get("aggregate_function", "count"),
+                    filters=args.get("filters"),
+                    order_by=args.get("order_by", "desc"),
+                    limit=args.get("limit", 20),
+                )
+
+                await function_call_params.result_callback(result)
+
+            except Exception as e:
+                logger.error(f"Knowledge base aggregation failed: {e}")
+                await function_call_params.result_callback(
+                    {"error": str(e), "results": []}
+                )
+
+        self.llm.register_function(
+            "aggregate_knowledge_base", aggregate_kb_func)
 
     async def _perform_variable_extraction_if_needed(
         self, node: Optional[Node], run_in_background: bool = True
@@ -426,7 +538,8 @@ class PipecatEngine:
 
         async def _do_extraction():
             try:
-                logger.debug(f"Starting variable extraction for node: {node.name}")
+                logger.debug(
+                    f"Starting variable extraction for node: {node.name}")
                 extracted_data = (
                     await self._variable_extraction_manager._perform_extraction(
                         extraction_variables, parent_context, extraction_prompt
@@ -483,7 +596,8 @@ class PipecatEngine:
         start_time = asyncio.get_event_loop().time()
         try:
             results = await asyncio.wait_for(
-                asyncio.gather(*self._pending_extraction_tasks, return_exceptions=True),
+                asyncio.gather(*self._pending_extraction_tasks,
+                               return_exceptions=True),
                 timeout=timeout,
             )
             elapsed = asyncio.get_event_loop().time() - start_time
@@ -493,7 +607,8 @@ class PipecatEngine:
                     logger.error(
                         f"Pending extraction task '{task_name}' failed: {result}"
                     )
-            logger.debug(f"All pending extraction tasks completed in {elapsed:.2f}s")
+            logger.debug(
+                f"All pending extraction tasks completed in {elapsed:.2f}s")
         except asyncio.TimeoutError:
             incomplete = [
                 t.get_name() for t in self._pending_extraction_tasks if not t.done()
@@ -532,6 +647,8 @@ class PipecatEngine:
         # Register knowledge base retrieval handler if node has documents
         if node.document_uuids:
             await self._register_knowledge_base_function(node.document_uuids)
+            await self._register_knowledge_base_filter_function(node.document_uuids)
+            await self._register_knowledge_base_aggregate_function(node.document_uuids)
 
         # Compose prompt and functions via the context composer module
         system_prompt = compose_system_prompt_for_node(
@@ -543,6 +660,7 @@ class PipecatEngine:
         functions = await compose_functions_for_node(
             node=node,
             custom_tool_manager=self._custom_tool_manager,
+            organization_id=await self._get_organization_id(),
         )
         await self._update_llm_context(system_prompt, functions)
 
@@ -665,7 +783,8 @@ class PipecatEngine:
                     and self._fetch_recording_audio
                     and self._transport_output is not None
                 ):
-                    logger.debug(f"Playing audio greeting recording: {greeting_value}")
+                    logger.debug(
+                        f"Playing audio greeting recording: {greeting_value}")
                     result = await self._fetch_recording_audio(
                         recording_pk=int(greeting_value)
                     )
@@ -747,12 +866,14 @@ class PipecatEngine:
             )
 
         frame_to_push = (
-            CancelFrame(reason=reason) if abort_immediately else EndFrame(reason=reason)
+            CancelFrame(reason=reason) if abort_immediately else EndFrame(
+                reason=reason)
         )
 
         # Record the call disposition: prefer one extracted from the conversation,
         # otherwise fall back to the disconnect reason.
-        call_disposition = self._gathered_context.get("call_disposition", "") or reason
+        call_disposition = self._gathered_context.get(
+            "call_disposition", "") or reason
         self._gathered_context["call_disposition"] = call_disposition
         self._gathered_context["mapped_call_disposition"] = call_disposition
 
@@ -903,7 +1024,8 @@ class PipecatEngine:
 
             organization_id = await self._get_organization_id()
             if not organization_id:
-                logger.warning("Cannot open MCP sessions: organization_id missing")
+                logger.warning(
+                    "Cannot open MCP sessions: organization_id missing")
                 return
 
             tools = await db_client.get_tools_by_uuids(
