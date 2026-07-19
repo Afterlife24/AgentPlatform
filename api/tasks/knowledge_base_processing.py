@@ -5,6 +5,7 @@ this task downloads the file from S3, calls MPS, then handles the embedding
 and DB writes locally.
 """
 
+import json
 import os
 import tempfile
 
@@ -15,6 +16,10 @@ from api.db.models import KnowledgeBaseChunkModel
 from api.services.gen_ai import build_embedding_service
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.storage import storage_fs
+from api.services.workflow.tools.metadata_extraction import (
+    extract_metadata_from_structured_json,
+    extract_metadata_from_text,
+)
 
 MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
 EMBEDDING_BATCH_SIZE = 64
@@ -260,19 +265,44 @@ async def process_knowledge_base_document(
         if not mps_chunks:
             logger.warning(f"Document {document_id}: MPS returned zero chunks")
 
+        # Attempt to enrich chunk_metadata from structured JSON sources.
+        # If the source file is JSON with a known structure (e.g., equipment catalog),
+        # we extract filterable metadata fields per chunk.
+        enriched_metadata_map = await _build_enriched_metadata(
+            s3_key=s3_key,
+            temp_file_path=temp_file_path,
+            mime_type=mime_type,
+            mps_chunks=mps_chunks,
+        )
+
         chunk_records = []
         chunk_texts = []
         for chunk in mps_chunks:
             contextualized = chunk.get(
                 "contextualized_text") or chunk["chunk_text"]
+
+            # Merge MPS chunk metadata with enriched extraction
+            base_metadata = chunk.get("chunk_metadata") or {}
+            chunk_idx = chunk["chunk_index"]
+            if chunk_idx in enriched_metadata_map:
+                base_metadata = {**base_metadata, **
+                                 enriched_metadata_map[chunk_idx]}
+            elif not enriched_metadata_map:
+                # Fallback: extract from text for unstructured docs
+                text_metadata = extract_metadata_from_text(
+                    contextualized, filename
+                )
+                if text_metadata:
+                    base_metadata = {**base_metadata, **text_metadata}
+
             chunk_records.append(
                 KnowledgeBaseChunkModel(
                     document_id=document_id,
                     organization_id=organization_id,
                     chunk_text=chunk["chunk_text"],
                     contextualized_text=contextualized,
-                    chunk_index=chunk["chunk_index"],
-                    chunk_metadata=chunk.get("chunk_metadata") or {},
+                    chunk_index=chunk_idx,
+                    chunk_metadata=base_metadata,
                     embedding_model=embedding_service.get_model_id(),
                     embedding_dimension=embedding_service.get_embedding_dimension(),
                     token_count=chunk.get("token_count", 0),
@@ -329,3 +359,312 @@ async def process_knowledge_base_document(
             except Exception as e:
                 logger.warning(
                     f"Failed to clean up temp file {temp_file_path}: {e}")
+
+
+async def _build_enriched_metadata(
+    s3_key: str,
+    temp_file_path: str,
+    mime_type: str,
+    mps_chunks: list[dict],
+) -> dict[int, dict]:
+    """Attempt to extract structured metadata from the source file.
+
+    For JSON files with a known catalog structure (like Johnson Arabia equipment
+    data), this parses the JSON and maps each model to its chunk index, providing
+    rich filterable metadata per chunk.
+
+    Args:
+        s3_key: The S3 key of the file (used for filename detection).
+        temp_file_path: Local path to the downloaded file.
+        mime_type: MIME type of the file.
+        mps_chunks: The chunks returned by MPS (used to correlate by index/text).
+
+    Returns:
+        Dict mapping chunk_index → enriched metadata dict.
+        Empty dict if the file isn't a recognized structured format.
+    """
+    # Only attempt structured extraction for JSON files
+    if mime_type not in ("application/json", "text/json") and not s3_key.endswith(".json"):
+        return {}
+
+    try:
+        with open(temp_file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        logger.debug(f"Could not parse JSON for metadata extraction: {e}")
+        return {}
+
+    # Detect the Johnson Arabia / equipment catalog structure:
+    # v2: { "chunks": [{ "model": "...", "metadata": {...}, ... }] }
+    # v1: { "categories": [{ "category_heading": "...", "models": [...] }] }
+    chunks_array = data.get("chunks")
+    if chunks_array and isinstance(chunks_array, list) and chunks_array:
+        first = chunks_array[0]
+        if isinstance(first, dict) and "metadata" in first and "model" in first:
+            return _map_v2_chunks_to_mps_chunks(chunks_array, mps_chunks)
+
+    categories = data.get("categories")
+    if not categories or not isinstance(categories, list):
+        # Try flat array of items with "model" keys
+        if isinstance(data, list) and data and "model" in data[0]:
+            return _map_flat_models_to_chunks(data, mps_chunks)
+        return {}
+
+    return _map_categorized_models_to_chunks(categories, mps_chunks)
+
+
+def _map_v2_chunks_to_mps_chunks(
+    json_chunks: list[dict],
+    mps_chunks: list[dict],
+) -> dict[int, dict]:
+    """Map v2-format JSON chunks (with inline metadata) to MPS chunk indices.
+
+    The v2 JSON format has:
+    { "chunks": [{ "model": "Grove RT875E", "metadata": {...}, "sections": [...] }] }
+
+    Each chunk already has a `metadata` dict with fields like manufacturer,
+    capacity_ton, equipment_type, parent_category, etc.
+
+    Strategy: For each MPS chunk, check if any model name appears in its text.
+    Since MPS may split one equipment item into multiple chunks, we also apply
+    metadata to consecutive chunks following a match (until a different model
+    is found).
+    """
+    # Build lookup: model_name_lower → metadata from the JSON
+    model_metadata: dict[str, dict] = {}
+    # Also build a list of all model names for matching, sorted longest first
+    # to avoid partial matches (e.g., "Grove RT" matching before "Grove RT875E")
+    model_names: list[str] = []
+    for item in json_chunks:
+        model_name = item.get("model", "")
+        metadata = item.get("metadata")
+        if not model_name or not metadata or not isinstance(metadata, dict):
+            continue
+        model_metadata[model_name.lower()] = metadata
+        model_names.append(model_name.lower())
+
+    if not model_metadata:
+        return {}
+
+    # Sort model names longest first to avoid partial match issues
+    model_names.sort(key=len, reverse=True)
+
+    def _normalize(text: str) -> str:
+        """Normalize text for matching: collapse whitespace around hyphens/dots,
+        remove special chars that MPS might split differently."""
+        import re as _re
+        # Collapse spaces around hyphens: "1450 - 8.1" → "1450-8.1"
+        text = _re.sub(r'\s*-\s*', '-', text)
+        # Collapse spaces around dots: "8 . 1" → "8.1"
+        text = _re.sub(r'\s*\.\s*', '.', text)
+        # Collapse multiple spaces
+        text = _re.sub(r'\s+', ' ', text)
+        return text.strip()
+
+    # Pre-normalize model names
+    normalized_model_map: dict[str, str] = {}  # normalized → original
+    for m in model_names:
+        normalized_model_map[_normalize(m)] = m
+
+    # First pass: find direct model name matches in chunk text
+    enriched: dict[int, dict] = {}
+    chunk_model_assignment: dict[int, str] = {}  # chunk_idx → model_name
+
+    for chunk in mps_chunks:
+        chunk_text = (chunk.get("chunk_text") or "").lower()
+        normalized_text = _normalize(chunk_text)
+        chunk_idx = chunk["chunk_index"]
+
+        # Try normalized matching first
+        matched = False
+        for norm_model, orig_model in normalized_model_map.items():
+            if norm_model in normalized_text:
+                enriched[chunk_idx] = model_metadata[orig_model]
+                chunk_model_assignment[chunk_idx] = orig_model
+                matched = True
+                break
+
+        # Fallback: try original matching
+        if not matched:
+            for model_lower in model_names:
+                if model_lower in chunk_text:
+                    enriched[chunk_idx] = model_metadata[model_lower]
+                    chunk_model_assignment[chunk_idx] = model_lower
+                    break
+
+    # Second pass: for chunks not matched by full model name, try matching
+    # by manufacturer name alone. Build a manufacturer → metadata list lookup.
+    # If a chunk mentions a manufacturer but wasn't matched by a full model name,
+    # find the best matching model from that manufacturer.
+    if len(enriched) < len(mps_chunks):
+        # Group models by manufacturer
+        mfr_models: dict[str, list[tuple[str, dict]]] = {}
+        for model_lower, metadata in model_metadata.items():
+            mfr = (metadata.get("manufacturer") or "").lower()
+            if mfr:
+                if mfr not in mfr_models:
+                    mfr_models[mfr] = []
+                mfr_models[mfr].append((model_lower, metadata))
+
+        for chunk in mps_chunks:
+            chunk_idx = chunk["chunk_index"]
+            if chunk_idx in enriched:
+                continue
+
+            chunk_text = (chunk.get("chunk_text") or "").lower()
+            normalized_chunk = _normalize(chunk_text)
+
+            # Check if any manufacturer name appears in the chunk
+            for mfr_lower, models_list in mfr_models.items():
+                if mfr_lower in chunk_text:
+                    # Find the best model match from this manufacturer
+                    # Try each model's short name (last part after manufacturer)
+                    best_match = None
+                    for model_lower, metadata in models_list:
+                        # Try model suffix (e.g., "gr-300ex" from "tadano gr-300ex")
+                        parts = model_lower.split()
+                        if len(parts) > 1:
+                            suffix = " ".join(parts[1:])
+                            norm_suffix = _normalize(suffix)
+                            if norm_suffix in normalized_chunk or suffix in chunk_text:
+                                best_match = metadata
+                                chunk_model_assignment[chunk_idx] = model_lower
+                                break
+                    if best_match:
+                        enriched[chunk_idx] = best_match
+                        break
+                    else:
+                        # Can't determine specific model, but we know manufacturer.
+                        # Assign only non-model-specific fields (manufacturer,
+                        # parent_category, equipment_type) — NOT capacity or model name
+                        # since those are model-specific and would be wrong.
+                        if models_list:
+                            base_meta = models_list[0][1]
+                            generic_meta = {}
+                            # Only copy category-level fields, not model-specific ones
+                            for key in ("manufacturer", "parent_category",
+                                        "equipment_type", "sub_category",
+                                        "listing", "crawler", "all_terrain",
+                                        "rough_terrain", "truck_mounted",
+                                        "pick_and_carry"):
+                                if key in base_meta:
+                                    generic_meta[key] = base_meta[key]
+                            if generic_meta:
+                                enriched[chunk_idx] = generic_meta
+                            break
+
+    # Second pass: for unmatched chunks, propagate metadata from the nearest
+    # preceding matched chunk. This handles multi-chunk equipment items where
+    # the model name only appears in the first chunk.
+    sorted_indices = sorted(chunk_model_assignment.keys())
+    if sorted_indices:
+        for chunk in mps_chunks:
+            chunk_idx = chunk["chunk_index"]
+            if chunk_idx in enriched:
+                continue
+
+            # Find the nearest preceding matched chunk
+            prev_model = None
+            for matched_idx in sorted_indices:
+                if matched_idx > chunk_idx:
+                    break
+                prev_model = chunk_model_assignment[matched_idx]
+
+            if prev_model:
+                # Check if the next matched chunk is close enough
+                # (if the gap is reasonable, assume this chunk belongs to the same item)
+                next_matched = None
+                for matched_idx in sorted_indices:
+                    if matched_idx > chunk_idx:
+                        next_matched = matched_idx
+                        break
+
+                # Only propagate if we're between two matches or close after one
+                # Heuristic: max 8 chunks gap (typical equipment item is 5-6 chunks)
+                prev_matched = max(
+                    (i for i in sorted_indices if i <= chunk_idx), default=None)
+                if prev_matched is not None and (chunk_idx - prev_matched) <= 8:
+                    # If there's a next match and we're past it, don't propagate
+                    if next_matched is None or chunk_idx < next_matched:
+                        enriched[chunk_idx] = model_metadata[prev_model]
+
+    logger.info(
+        f"Enriched {len(enriched)}/{len(mps_chunks)} chunks with v2 metadata "
+        f"from {len(model_metadata)} models"
+    )
+    return enriched
+
+
+def _map_categorized_models_to_chunks(
+    categories: list[dict],
+    mps_chunks: list[dict],
+) -> dict[int, dict]:
+    """Map categorized equipment JSON models to their corresponding MPS chunk indices.
+
+    Correlates by matching model names found in chunk text.
+    """
+    # Build a lookup: model_name_lower → metadata
+    model_metadata: dict[str, dict] = {}
+    for category in categories:
+        category_heading = category.get("category_heading", "")
+        models = category.get("models", [])
+        for model_item in models:
+            model_name = model_item.get("model", "")
+            if not model_name:
+                continue
+            metadata = extract_metadata_from_structured_json(
+                model_item, category_heading
+            )
+            model_metadata[model_name.lower()] = metadata
+
+    if not model_metadata:
+        return {}
+
+    # Now correlate with MPS chunks by checking if model name appears in chunk text
+    enriched: dict[int, dict] = {}
+    for chunk in mps_chunks:
+        chunk_text = (chunk.get("chunk_text") or "").lower()
+        chunk_idx = chunk["chunk_index"]
+
+        for model_lower, metadata in model_metadata.items():
+            if model_lower in chunk_text:
+                enriched[chunk_idx] = metadata
+                break
+
+    logger.info(
+        f"Enriched {len(enriched)}/{len(mps_chunks)} chunks with structured metadata "
+        f"from {len(model_metadata)} models"
+    )
+    return enriched
+
+
+def _map_flat_models_to_chunks(
+    items: list[dict],
+    mps_chunks: list[dict],
+) -> dict[int, dict]:
+    """Map a flat list of model items to chunks."""
+    model_metadata: dict[str, dict] = {}
+    for item in items:
+        model_name = item.get("model", "")
+        if not model_name:
+            continue
+        metadata = extract_metadata_from_structured_json(item)
+        model_metadata[model_name.lower()] = metadata
+
+    if not model_metadata:
+        return {}
+
+    enriched: dict[int, dict] = {}
+    for chunk in mps_chunks:
+        chunk_text = (chunk.get("chunk_text") or "").lower()
+        chunk_idx = chunk["chunk_index"]
+
+        for model_lower, metadata in model_metadata.items():
+            if model_lower in chunk_text:
+                enriched[chunk_idx] = metadata
+                break
+
+    logger.info(
+        f"Enriched {len(enriched)}/{len(mps_chunks)} chunks with flat model metadata"
+    )
+    return enriched

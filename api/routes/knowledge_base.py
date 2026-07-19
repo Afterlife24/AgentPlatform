@@ -254,7 +254,8 @@ async def list_documents(
 
     except Exception as exc:
         logger.error(f"Error listing documents: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to list documents") from exc
+        raise HTTPException(
+            status_code=500, detail="Failed to list documents") from exc
 
 
 @router.get(
@@ -306,7 +307,8 @@ async def get_document(
         raise
     except Exception as exc:
         logger.error(f"Error getting document: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to get document") from exc
+        raise HTTPException(
+            status_code=500, detail="Failed to get document") from exc
 
 
 @router.delete(
@@ -391,11 +393,14 @@ async def search_chunks(
         if effective_config.embeddings:
             embeddings_api_key = effective_config.embeddings.api_key
             embeddings_model = effective_config.embeddings.model
-            embeddings_provider = getattr(effective_config.embeddings, "provider", None)
-            embeddings_endpoint = getattr(effective_config.embeddings, "endpoint", None)
+            embeddings_provider = getattr(
+                effective_config.embeddings, "provider", None)
+            embeddings_endpoint = getattr(
+                effective_config.embeddings, "endpoint", None)
             embeddings_base_url = apply_managed_embeddings_base_url(
                 provider=embeddings_provider,
-                base_url=getattr(effective_config.embeddings, "base_url", None),
+                base_url=getattr(effective_config.embeddings,
+                                 "base_url", None),
             )
             embeddings_api_version = getattr(
                 effective_config.embeddings, "api_version", None
@@ -426,7 +431,8 @@ async def search_chunks(
 
         # Apply similarity threshold if provided
         if request.min_similarity is not None:
-            results = [r for r in results if r["similarity"] >= request.min_similarity]
+            results = [r for r in results if r["similarity"]
+                       >= request.min_similarity]
 
         # Convert to response schema
         from api.schemas.knowledge_base import ChunkResponseSchema
@@ -454,4 +460,92 @@ async def search_chunks(
 
     except Exception as exc:
         logger.error(f"Error searching chunks: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to search chunks") from exc
+        raise HTTPException(
+            status_code=500, detail="Failed to search chunks") from exc
+
+
+@router.post(
+    "/filter",
+    summary="Filter chunks by metadata",
+)
+async def filter_chunks_by_metadata(
+    request: dict,
+    user=Depends(get_user),
+):
+    """Filter knowledge base chunks by structured metadata fields.
+
+    This endpoint uses PostgreSQL JSON operators on the chunk_metadata column
+    to perform exact-match and comparison filtering without embedding generation.
+
+    Request body:
+        filters: Dict of metadata filters. Supports:
+            - Exact match: {"manufacturer": "Terex"}
+            - Greater than: {"rated_capacity_ton": {"gt": 500}}
+            - Less than: {"rated_capacity_ton": {"lt": 100}}
+            - In list: {"equipment_type": {"in": ["Rough Terrain", "All Terrain"]}}
+        document_uuids: Optional list of document UUIDs to scope
+        limit: Max results (default 20, max 50)
+
+    Access Control:
+    * Users can only filter documents from their organization.
+    """
+    try:
+        filters = request.get("filters", {})
+        document_uuids = request.get("document_uuids")
+        limit = request.get("limit", 20)
+
+        if not filters:
+            raise HTTPException(
+                status_code=400,
+                detail="'filters' field is required and cannot be empty",
+            )
+
+        results = await db_client.filter_chunks_by_metadata(
+            organization_id=user.selected_organization_id,
+            filters=filters,
+            document_uuids=document_uuids,
+            limit=min(max(1, limit), 50),
+        )
+
+        return {
+            "results": results,
+            "filters_applied": filters,
+            "total_results": len(results),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Error filtering chunks: {exc}")
+        raise HTTPException(
+            status_code=500, detail="Failed to filter chunks"
+        ) from exc
+
+
+@router.get(
+    "/metadata-fields",
+    summary="Get available metadata fields",
+)
+async def get_metadata_fields(
+    user=Depends(get_user),
+):
+    """Get distinct metadata field names available for filtering.
+
+    Returns the set of field names found in chunk_metadata across
+    the organization's knowledge base documents. Useful for discovering
+    what filters are available.
+
+    Access Control:
+    * Users can only see fields from their organization's documents.
+    """
+    try:
+        fields = await db_client.get_metadata_fields_for_org(
+            organization_id=user.selected_organization_id,
+        )
+        return {"fields": fields}
+
+    except Exception as exc:
+        logger.error(f"Error getting metadata fields: {exc}")
+        raise HTTPException(
+            status_code=500, detail="Failed to get metadata fields"
+        ) from exc

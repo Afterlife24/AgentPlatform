@@ -537,6 +537,586 @@ class KnowledgeBaseClient(BaseDBClient):
             )
             return True
 
+    async def filter_chunks_by_metadata(
+        self,
+        organization_id: int,
+        filters: dict,
+        document_uuids: Optional[List[str]] = None,
+        limit: int = 20,
+    ) -> List[dict]:
+        """Filter chunks by structured metadata using PostgreSQL JSON operators.
+
+        Supports exact match, comparison operators, and IN-list filtering
+        on the chunk_metadata JSONB column.
+
+        Args:
+            organization_id: Organization ID for scoping
+            filters: Dict of filters. Keys are metadata field names, values can be:
+                - scalar (str/int/float): exact match
+                - dict with operator: {"gt": n}, {"lt": n}, {"gte": n}, {"lte": n}
+                - dict with "in": {"in": [values]}
+            document_uuids: Optional list of document UUIDs to scope
+            limit: Max results to return
+
+        Returns:
+            List of dicts with chunk data and metadata
+        """
+        import re as _re
+
+        # Sanitize field names: only allow alphanumeric + underscore
+        # This prevents SQL injection via malicious field names
+        _SAFE_FIELD = _re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+        async with self.async_session() as session:
+            connection = await session.connection()
+            raw_connection = await connection.get_raw_connection()
+
+            where_conditions = [
+                "c.organization_id = $1",
+                "d.is_active = true",
+            ]
+            params: list = [organization_id, limit]
+            param_index = 3  # $1=org_id, $2=limit, next is $3
+
+            # Add document_uuids filter
+            if document_uuids:
+                placeholders = ", ".join(
+                    f"${param_index + i}" for i in range(len(document_uuids))
+                )
+                where_conditions.append(f"d.document_uuid IN ({placeholders})")
+                params.extend(document_uuids)
+                param_index += len(document_uuids)
+
+            # Build metadata filter conditions
+            for field, value in filters.items():
+                # Reject unsafe field names to prevent SQL injection
+                if not _SAFE_FIELD.match(field):
+                    logger.warning(
+                        f"Skipping unsafe metadata filter field name: {field!r}"
+                    )
+                    continue
+
+                if isinstance(value, dict):
+                    # Operator-based filter
+                    for op, op_value in value.items():
+                        # Use a safe float cast that returns NULL for non-numeric values
+                        # instead of throwing an error. This handles chunks where the
+                        # metadata field exists but has a non-numeric value.
+                        safe_cast = (
+                            f"CASE WHEN c.chunk_metadata->>'{field}' ~ '^[0-9]+(\\.[0-9]+)?$' "
+                            f"THEN (c.chunk_metadata->>'{field}')::float ELSE NULL END"
+                        )
+                        if op == "gt":
+                            where_conditions.append(
+                                f"{safe_cast} > ${param_index}"
+                            )
+                            params.append(float(op_value))
+                            param_index += 1
+                        elif op == "lt":
+                            where_conditions.append(
+                                f"{safe_cast} < ${param_index}"
+                            )
+                            params.append(float(op_value))
+                            param_index += 1
+                        elif op == "gte":
+                            where_conditions.append(
+                                f"{safe_cast} >= ${param_index}"
+                            )
+                            params.append(float(op_value))
+                            param_index += 1
+                        elif op == "lte":
+                            where_conditions.append(
+                                f"{safe_cast} <= ${param_index}"
+                            )
+                            params.append(float(op_value))
+                            param_index += 1
+                        elif op == "in":
+                            if isinstance(op_value, list) and op_value:
+                                placeholders = ", ".join(
+                                    f"${param_index + i}"
+                                    for i in range(len(op_value))
+                                )
+                                where_conditions.append(
+                                    f"c.chunk_metadata->>'{field}' IN ({placeholders})"
+                                )
+                                params.extend([str(v) for v in op_value])
+                                param_index += len(op_value)
+                else:
+                    # Exact match
+                    if isinstance(value, bool):
+                        # Booleans in JSONB: ->> extracts as 'true'/'false' strings
+                        where_conditions.append(
+                            f"c.chunk_metadata->>'{field}' = ${param_index}"
+                        )
+                        params.append("true" if value else "false")
+                    elif isinstance(value, (int, float)):
+                        safe_cast = (
+                            f"CASE WHEN c.chunk_metadata->>'{field}' ~ '^[0-9]+(\\.[0-9]+)?$' "
+                            f"THEN (c.chunk_metadata->>'{field}')::float ELSE NULL END"
+                        )
+                        where_conditions.append(
+                            f"{safe_cast} = ${param_index}"
+                        )
+                        params.append(float(value))
+                    else:
+                        # Case-insensitive string match with LIKE for partial matching
+                        # This handles cases like "Tadano" matching "Tadano" or
+                        # "Grove (Manitowoc)" matching when user says "Grove"
+                        where_conditions.append(
+                            f"LOWER(c.chunk_metadata->>'{field}') LIKE LOWER(${param_index})"
+                        )
+                        # Add % wildcards for contains-match on fields where
+                        # values may have suffixes/prefixes
+                        val = str(value)
+                        fuzzy_fields = (
+                            "manufacturer", "category", "equipment_type",
+                            "sub_category", "parent_category",
+                        )
+                        if field in fuzzy_fields:
+                            params.append(f"%{val}%")
+                        else:
+                            params.append(val)
+                    param_index += 1
+
+            where_clause = " AND ".join(where_conditions)
+            query_sql = f"""
+                SELECT
+                    c.id,
+                    c.document_id,
+                    c.chunk_text,
+                    c.contextualized_text,
+                    c.chunk_metadata,
+                    c.chunk_index,
+                    d.filename,
+                    d.document_uuid
+                FROM knowledge_base_chunks c
+                JOIN knowledge_base_documents d ON c.document_id = d.id
+                WHERE {where_clause}
+                ORDER BY c.chunk_index
+                LIMIT $2
+            """
+
+            rows = await raw_connection.driver_connection.fetch(
+                query_sql,
+                *params,
+            )
+
+            # Convert to list of dicts with useful fields
+            results = []
+            for row in rows:
+                row_dict = dict(row)
+                # Parse chunk_metadata if it's a string
+                metadata = row_dict.get("chunk_metadata", {})
+                if isinstance(metadata, str):
+                    try:
+                        metadata = __import__("json").loads(metadata)
+                    except (ValueError, TypeError):
+                        metadata = {}
+
+                results.append({
+                    "text": row_dict.get("contextualized_text") or row_dict.get("chunk_text", ""),
+                    "chunk_text": row_dict.get("chunk_text", ""),
+                    "metadata": metadata,
+                    "filename": row_dict.get("filename"),
+                    "document_uuid": row_dict.get("document_uuid"),
+                    "chunk_index": row_dict.get("chunk_index"),
+                })
+
+            return results
+
+    async def aggregate_chunks_metadata(
+        self,
+        organization_id: int,
+        group_by: Optional[str] = None,
+        aggregate_field: Optional[str] = None,
+        aggregate_function: str = "count",
+        document_uuids: Optional[List[str]] = None,
+        filters: Optional[dict] = None,
+        order_by: str = "desc",
+        limit: int = 20,
+    ) -> List[dict]:
+        """Perform aggregation on chunk metadata using PostgreSQL.
+
+        Supports COUNT, AVG, MAX, MIN, SUM with optional GROUP BY.
+
+        Args:
+            organization_id: Organization ID for scoping
+            group_by: Field to group by (optional)
+            aggregate_field: Numeric field for avg/max/min/sum
+            aggregate_function: count, avg, max, min, sum
+            document_uuids: Optional document filter
+            filters: Optional pre-filters (same as filter_chunks_by_metadata)
+            order_by: desc or asc
+            limit: Max groups
+
+        Returns:
+            List of dicts with group key and aggregate value
+        """
+        import re as _re
+        _SAFE_FIELD = _re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+        # Validate field names
+        if group_by and not _SAFE_FIELD.match(group_by):
+            raise ValueError(f"Unsafe group_by field: {group_by}")
+        if aggregate_field and not _SAFE_FIELD.match(aggregate_field):
+            raise ValueError(f"Unsafe aggregate_field: {aggregate_field}")
+
+        async with self.async_session() as session:
+            connection = await session.connection()
+            raw_connection = await connection.get_raw_connection()
+
+            where_conditions = [
+                "c.organization_id = $1",
+                "d.is_active = true",
+            ]
+            params: list = [organization_id]
+            param_index = 2
+
+            # Add document_uuids filter
+            if document_uuids:
+                placeholders = ", ".join(
+                    f"${param_index + i}" for i in range(len(document_uuids))
+                )
+                where_conditions.append(
+                    f"d.document_uuid IN ({placeholders})"
+                )
+                params.extend(document_uuids)
+                param_index += len(document_uuids)
+
+            # Add pre-filters on metadata
+            if filters:
+                for field, value in filters.items():
+                    if not _SAFE_FIELD.match(field):
+                        continue
+                    if isinstance(value, bool):
+                        where_conditions.append(
+                            f"c.chunk_metadata->>'{field}' = ${param_index}"
+                        )
+                        params.append("true" if value else "false")
+                        param_index += 1
+                    elif isinstance(value, str):
+                        where_conditions.append(
+                            f"LOWER(c.chunk_metadata->>'{field}') LIKE LOWER(${param_index})"
+                        )
+                        params.append(f"%{value}%")
+                        param_index += 1
+                    elif isinstance(value, (int, float)):
+                        where_conditions.append(
+                            f"(c.chunk_metadata->>'{field}')::float = ${param_index}"
+                        )
+                        params.append(float(value))
+                        param_index += 1
+                    elif isinstance(value, dict):
+                        for op, op_val in value.items():
+                            if op == "gt":
+                                where_conditions.append(
+                                    f"(c.chunk_metadata->>'{field}')::float > ${param_index}"
+                                )
+                                params.append(float(op_val))
+                                param_index += 1
+                            elif op == "gte":
+                                where_conditions.append(
+                                    f"(c.chunk_metadata->>'{field}')::float >= ${param_index}"
+                                )
+                                params.append(float(op_val))
+                                param_index += 1
+                            elif op == "lt":
+                                where_conditions.append(
+                                    f"(c.chunk_metadata->>'{field}')::float < ${param_index}"
+                                )
+                                params.append(float(op_val))
+                                param_index += 1
+                            elif op == "lte":
+                                where_conditions.append(
+                                    f"(c.chunk_metadata->>'{field}')::float <= ${param_index}"
+                                )
+                                params.append(float(op_val))
+                                param_index += 1
+
+            # Require the group_by or aggregate field to be non-null
+            if group_by:
+                where_conditions.append(
+                    f"c.chunk_metadata->>'{group_by}' IS NOT NULL"
+                )
+                where_conditions.append(
+                    f"c.chunk_metadata->>'{group_by}' != ''"
+                )
+
+            where_clause = " AND ".join(where_conditions)
+
+            # Build SELECT and GROUP BY
+            if group_by:
+                group_expr = f"c.chunk_metadata->>'{group_by}'"
+
+                if aggregate_function == "count":
+                    # Count unique items — use chunk_index = 0 or distinct model
+                    # to avoid counting multiple chunks from the same equipment item.
+                    # Heuristic: count chunks where chunk_index is lowest per document
+                    # section, approximated by counting distinct contextualized_text
+                    # patterns. Simpler: count only the first chunk per model group
+                    # by requiring the chunk has the manufacturer in its text.
+                    select_expr = (
+                        f"{group_expr} as group_key, "
+                        f"COUNT(DISTINCT COALESCE(c.chunk_metadata->>'model', c.id::text)) as agg_value"
+                    )
+                else:
+                    # For avg/max/min/sum, need numeric aggregate field
+                    agg_field_expr = (
+                        f"CASE WHEN c.chunk_metadata->>'{aggregate_field}' ~ '^[0-9]+(\\.[0-9]+)?$' "
+                        f"THEN (c.chunk_metadata->>'{aggregate_field}')::float ELSE NULL END"
+                    )
+                    func_map = {
+                        "avg": "AVG", "max": "MAX", "min": "MIN", "sum": "SUM"
+                    }
+                    sql_func = func_map[aggregate_function]
+                    select_expr = (
+                        f"{group_expr} as group_key, "
+                        f"{sql_func}({agg_field_expr}) as agg_value, "
+                        f"COUNT(DISTINCT c.id) as item_count"
+                    )
+
+                order_dir = "DESC" if order_by == "desc" else "ASC"
+                query_sql = f"""
+                    SELECT {select_expr}
+                    FROM knowledge_base_chunks c
+                    JOIN knowledge_base_documents d ON c.document_id = d.id
+                    WHERE {where_clause}
+                    GROUP BY {group_expr}
+                    ORDER BY agg_value {order_dir} NULLS LAST
+                    LIMIT {limit}
+                """
+            else:
+                # No group_by — single aggregate across all matching data
+                if aggregate_function == "count":
+                    select_expr = (
+                        "COUNT(DISTINCT COALESCE(c.chunk_metadata->>'model', c.id::text)) as agg_value"
+                    )
+                else:
+                    agg_field_expr = (
+                        f"CASE WHEN c.chunk_metadata->>'{aggregate_field}' ~ '^[0-9]+(\\.[0-9]+)?$' "
+                        f"THEN (c.chunk_metadata->>'{aggregate_field}')::float ELSE NULL END"
+                    )
+                    func_map = {
+                        "avg": "AVG", "max": "MAX", "min": "MIN", "sum": "SUM"
+                    }
+                    sql_func = func_map[aggregate_function]
+                    select_expr = f"{sql_func}({agg_field_expr}) as agg_value, COUNT(DISTINCT c.id) as item_count"
+
+                query_sql = f"""
+                    SELECT {select_expr}
+                    FROM knowledge_base_chunks c
+                    JOIN knowledge_base_documents d ON c.document_id = d.id
+                    WHERE {where_clause}
+                """
+
+            rows = await raw_connection.driver_connection.fetch(
+                query_sql, *params
+            )
+
+            results = []
+            for row in rows:
+                row_dict = dict(row)
+                result_item = {}
+                if group_by:
+                    result_item["group"] = row_dict.get("group_key")
+                agg_val = row_dict.get("agg_value")
+                if agg_val is not None:
+                    result_item[aggregate_function] = (
+                        round(float(agg_val), 2) if isinstance(agg_val, (int, float))
+                        else agg_val
+                    )
+                if "item_count" in row_dict:
+                    result_item["count"] = row_dict["item_count"]
+                results.append(result_item)
+
+            return results
+
+    async def search_chunks_by_text(
+        self,
+        organization_id: int,
+        search_terms: List[str],
+        document_uuids: Optional[List[str]] = None,
+        limit: int = 20,
+    ) -> List[dict]:
+        """Search chunks by text content using ILIKE (case-insensitive).
+
+        All search terms must appear in the chunk text (AND logic).
+        This is the last-resort fallback when metadata filtering returns nothing.
+
+        Args:
+            organization_id: Organization ID for scoping
+            search_terms: List of strings that must all appear in chunk_text
+            document_uuids: Optional document UUID filter
+            limit: Max results
+
+        Returns:
+            List of dicts with chunk data
+        """
+        if not search_terms:
+            return []
+
+        async with self.async_session() as session:
+            connection = await session.connection()
+            raw_connection = await connection.get_raw_connection()
+
+            where_conditions = [
+                "c.organization_id = $1",
+                "d.is_active = true",
+            ]
+            params: list = [organization_id, limit]
+            param_index = 3
+
+            # Add document_uuids filter
+            if document_uuids:
+                placeholders = ", ".join(
+                    f"${param_index + i}" for i in range(len(document_uuids))
+                )
+                where_conditions.append(
+                    f"d.document_uuid IN ({placeholders})"
+                )
+                params.extend(document_uuids)
+                param_index += len(document_uuids)
+
+            # Add text search conditions (all terms must match)
+            for term in search_terms:
+                where_conditions.append(
+                    f"c.chunk_text ILIKE ${param_index}"
+                )
+                params.append(f"%{term}%")
+                param_index += 1
+
+            where_clause = " AND ".join(where_conditions)
+            query_sql = f"""
+                SELECT
+                    c.id,
+                    c.document_id,
+                    c.chunk_text,
+                    c.contextualized_text,
+                    c.chunk_metadata,
+                    c.chunk_index,
+                    d.filename,
+                    d.document_uuid
+                FROM knowledge_base_chunks c
+                JOIN knowledge_base_documents d ON c.document_id = d.id
+                WHERE {where_clause}
+                ORDER BY c.chunk_index
+                LIMIT $2
+            """
+
+            rows = await raw_connection.driver_connection.fetch(
+                query_sql, *params
+            )
+
+            results = []
+            for row in rows:
+                row_dict = dict(row)
+                metadata = row_dict.get("chunk_metadata", {})
+                if isinstance(metadata, str):
+                    try:
+                        metadata = __import__("json").loads(metadata)
+                    except (ValueError, TypeError):
+                        metadata = {}
+
+                results.append({
+                    "text": row_dict.get("contextualized_text")
+                    or row_dict.get("chunk_text", ""),
+                    "chunk_text": row_dict.get("chunk_text", ""),
+                    "metadata": metadata,
+                    "filename": row_dict.get("filename"),
+                    "document_uuid": row_dict.get("document_uuid"),
+                    "chunk_index": row_dict.get("chunk_index"),
+                })
+
+            return results
+
+    async def get_metadata_fields_for_org(
+        self,
+        organization_id: int,
+        document_uuids: Optional[List[str]] = None,
+        sample_size: int = 100,
+    ) -> List[str]:
+        """Get distinct metadata field names with sample values for an org.
+
+        Returns field names with example values to help the LLM understand
+        what values to use in filters.
+
+        Args:
+            organization_id: Organization ID
+            document_uuids: Optional scope to specific documents
+            sample_size: Number of distinct values to sample per field
+
+        Returns:
+            List of strings like "manufacturer (e.g. Tadano, Liebherr, Grove)"
+        """
+        async with self.async_session() as session:
+            connection = await session.connection()
+            raw_connection = await connection.get_raw_connection()
+
+            # First get field names
+            if document_uuids:
+                placeholders = ", ".join(
+                    f"${i + 2}" for i in range(len(document_uuids))
+                )
+                fields_sql = f"""
+                    SELECT DISTINCT jsonb_object_keys(chunk_metadata::jsonb) as field_name
+                    FROM knowledge_base_chunks c
+                    JOIN knowledge_base_documents d ON c.document_id = d.id
+                    WHERE c.organization_id = $1
+                      AND d.document_uuid IN ({placeholders})
+                      AND d.is_active = true
+                """
+                params = [organization_id, *document_uuids]
+            else:
+                fields_sql = """
+                    SELECT DISTINCT jsonb_object_keys(chunk_metadata::jsonb) as field_name
+                    FROM knowledge_base_chunks c
+                    JOIN knowledge_base_documents d ON c.document_id = d.id
+                    WHERE c.organization_id = $1
+                      AND d.is_active = true
+                """
+                params = [organization_id]
+
+            try:
+                rows = await raw_connection.driver_connection.fetch(
+                    fields_sql, *params
+                )
+                field_names = [row["field_name"] for row in rows]
+
+                # For key filterable fields, get sample values
+                result_fields = []
+                sample_fields = [
+                    "manufacturer", "parent_category", "equipment_type",
+                    "category", "sub_category"
+                ]
+                for field in field_names:
+                    if field in sample_fields:
+                        # Get top 5 distinct values for this field
+                        val_sql = f"""
+                            SELECT DISTINCT chunk_metadata->>'{field}' as val
+                            FROM knowledge_base_chunks
+                            WHERE organization_id = $1
+                              AND chunk_metadata->>'{field}' IS NOT NULL
+                              AND chunk_metadata->>'{field}' != ''
+                            LIMIT 6
+                        """
+                        val_rows = await raw_connection.driver_connection.fetch(
+                            val_sql, organization_id
+                        )
+                        vals = [r["val"] for r in val_rows if r["val"]]
+                        if vals:
+                            examples = ", ".join(vals[:5])
+                            result_fields.append(
+                                f"{field} (values: {examples})")
+                        else:
+                            result_fields.append(field)
+                    else:
+                        result_fields.append(field)
+
+                return result_fields
+            except Exception as e:
+                logger.warning(f"Failed to get metadata fields: {e}")
+                return []
+
     @staticmethod
     def compute_file_hash(file_path: str) -> str:
         """Compute SHA-256 hash of a file.
