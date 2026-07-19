@@ -464,3 +464,5 @@ Same `--build` flag ensures EC2 also builds from source. The CI workflow (`.gith
 | `docker-compose.yaml`          | **Modified** (arq-worker added) | Exception to the no-edit rule — see note above                 |
 | `docker-compose.override.yaml` | Custom, ours                    | Now also overrides `api` and `arq-worker` to build from source |
 | `ui/Dockerfile`                | Modified                        | `--max-old-space-size` reduced from 4096 to 2048               |
+
+<!-- dummy commit: verifying develop runner after re-registration on 2026-07-19 -->
