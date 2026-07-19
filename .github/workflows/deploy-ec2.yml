@@ -35,4 +35,14 @@ jobs:
           git checkout ${{ github.ref_name }}
           git reset --hard origin/${{ github.ref_name }}
           sudo docker compose --profile remote up -d --build
+
+          # nginx resolves upstream container hostnames (api, ui, etc.) to their
+          # Docker-network IPs once at startup and caches them. `up -d --build`
+          # above recreates those containers with new IPs whenever their image
+          # changes, so nginx is left pointing at dead IPs until it's restarted.
+          # Without this, every deploy that touches api/ui leaves the site
+          # returning 502s on all /api/v1/* routes until someone notices and
+          # manually restarts nginx.
+          sudo docker compose --profile remote restart nginx
+
           echo "Deployed $(git rev-parse --short HEAD) on ${{ github.ref_name }}"
