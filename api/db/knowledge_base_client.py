@@ -931,6 +931,292 @@ class KnowledgeBaseClient(BaseDBClient):
 
             return results
 
+    async def search_chunks_bm25(
+        self,
+        query: str,
+        organization_id: int,
+        limit: int = 20,
+        document_uuids: Optional[List[str]] = None,
+        embedding_model: Optional[str] = None,
+    ) -> List[dict]:
+        """BM25-style full-text search using PostgreSQL tsvector / ts_rank.
+
+        Converts the query to a tsquery (websearch_to_tsquery for natural
+        language input tolerance) and ranks results by ts_rank_cd which
+        approximates BM25 coverage density.
+
+        Args:
+            query: Natural language search query.
+            organization_id: Organization ID for scoping.
+            limit: Maximum number of results to return.
+            document_uuids: Optional document UUID filter.
+            embedding_model: Optional embedding model filter (ignored for BM25
+                but kept for API symmetry with search_similar_chunks).
+
+        Returns:
+            List of dicts with chunk data and a ``bm25_rank`` score (higher = better).
+        """
+        async with self.async_session() as session:
+            connection = await session.connection()
+            raw_connection = await connection.get_raw_connection()
+
+            # Build common filter conditions (everything except the tsquery match)
+            filter_conditions = [
+                "c.organization_id = $2",
+                "d.is_active = true",
+            ]
+            params: list = [query, organization_id, limit]
+            param_index = 4
+
+            if document_uuids:
+                placeholders = ", ".join(
+                    f"${param_index + i}" for i in range(len(document_uuids))
+                )
+                filter_conditions.append(f"d.document_uuid IN ({placeholders})")
+                params.extend(document_uuids)
+                param_index += len(document_uuids)
+
+            if embedding_model:
+                filter_conditions.append(f"c.embedding_model = ${param_index}")
+                params.append(embedding_model)
+                param_index += 1
+
+            filter_clause = " AND ".join(filter_conditions)
+
+            # --- Two-pass BM25 strategy ---
+            # Pass 1: strict AND via websearch_to_tsquery on the GIN-indexed
+            #         chunk_ts column (fast, high precision).
+            # Pass 2: loose AND via plainto_tsquery on combined
+            #         (chunk_text || contextualized_text).  This catches
+            #         split-record chunks where the model name and capacity
+            #         are in contextualized_text but not chunk_text, which is
+            #         a common artifact of JSON-based chunking.
+            strict_sql = f"""
+                SELECT
+                    c.id,
+                    c.document_id,
+                    c.chunk_text,
+                    c.contextualized_text,
+                    c.chunk_metadata,
+                    c.chunk_index,
+                    d.filename,
+                    d.document_uuid,
+                    ts_rank_cd(c.chunk_ts, websearch_to_tsquery('english', $1)) AS bm25_rank
+                FROM knowledge_base_chunks c
+                JOIN knowledge_base_documents d ON c.document_id = d.id
+                WHERE {filter_clause}
+                  AND c.chunk_ts @@ websearch_to_tsquery('english', $1)
+                ORDER BY bm25_rank DESC
+                LIMIT $3
+            """
+
+            # Loose pass: OR-based search on combined (chunk_text + contextualized_text).
+            # For equipment model queries like "LTM1450-8.1 capacity", the JSON
+            # chunking splits the record so that the model number alias ("ltm1450")
+            # is in one chunk while the capacity section is in another.  No single
+            # chunk contains all AND-query terms.
+            #
+            # Strategy: expand alphanumeric model tokens (e.g. "ltm1450") into an
+            # OR between the concatenated form ("ltm1450") and split form ("ltm & 1450").
+            # This surfaces the spec chunks that spell the model as "LTM 1450".
+            import re as _re
+
+            def _build_loose_tsquery(raw_query: str) -> str:
+                """Build an OR-expanded tsquery for model number queries.
+
+                E.g. "Liebherr LTM1450-8.1 lifting capacity"
+                → 'liebherr & (ltm1450 | (ltm & 1450)) & lift & capac'
+
+                Falls back to plainto_tsquery result if expansion produces
+                nothing useful.
+                """
+                # Tokenise via postgres tsvector to get stemmed lexemes
+                # We'll construct the query in Python to keep it simple.
+                # Regex: find CamelCase/alphanumeric model-number tokens
+                # like LTM1450, AC500, GMK6300 (letters followed by digits)
+                model_token_re = _re.compile(r'\b([A-Za-z]{1,5})(\d{3,6})\b')
+                expanded_parts: list[str] = []
+                remainder = raw_query
+                for match in model_token_re.finditer(raw_query):
+                    letters = match.group(1).lower()
+                    digits = match.group(2)
+                    # Expand: "ltm1450" | (ltm & 1450)
+                    expanded_parts.append(f"({letters}{digits} | ({letters} & {digits}))")
+                    remainder = remainder.replace(match.group(0), "")
+
+                # Remaining non-model words → add as individual OR terms
+                # but only meaningful ones (≥4 chars after stripping stop words)
+                remaining_words = [
+                    w.lower() for w in _re.split(r'\W+', remainder)
+                    if len(w) >= 4 and w.lower() not in {
+                        "what", "which", "does", "have", "with", "that", "this",
+                        "from", "your", "their", "crane", "lift",  # too common in fleet
+                    }
+                ]
+                all_parts = expanded_parts + remaining_words
+                if not all_parts:
+                    return ""
+                return " & ".join(all_parts)
+
+            loose_tsquery_expr = _build_loose_tsquery(query)
+
+            if loose_tsquery_expr:
+                # Inline the tsquery expression as a SQL literal — it is safe
+                # because _build_loose_tsquery() builds it from regex-extracted
+                # alphanumeric tokens only (no user-controlled string injection).
+                # This avoids asyncpg parameter type inference failures that occur
+                # when passing a tsquery string as a $N parameter inside
+                # to_tsquery('english', $N) without an explicit ::text cast.
+                safe_tsquery_literal = loose_tsquery_expr.replace("'", "''")
+                loose_sql = f"""
+                    SELECT
+                        c.id,
+                        c.document_id,
+                        c.chunk_text,
+                        c.contextualized_text,
+                        c.chunk_metadata,
+                        c.chunk_index,
+                        d.filename,
+                        d.document_uuid,
+                        ts_rank_cd(
+                            to_tsvector('english',
+                                coalesce(c.chunk_text, '') || ' ' || coalesce(c.contextualized_text, '')
+                            ),
+                            to_tsquery('english', '{safe_tsquery_literal}')
+                        ) AS bm25_rank
+                    FROM knowledge_base_chunks c
+                    JOIN knowledge_base_documents d ON c.document_id = d.id
+                    WHERE {filter_clause}
+                      AND to_tsvector('english',
+                            coalesce(c.chunk_text, '') || ' ' || coalesce(c.contextualized_text, '')
+                          ) @@ to_tsquery('english', '{safe_tsquery_literal}')
+                    ORDER BY bm25_rank DESC
+                    LIMIT $3
+                """
+                loose_params = list(params)
+            else:
+                loose_sql = None
+                loose_params = params
+
+            try:
+                # Try strict pass first (uses GIN index, fast)
+                rows = await raw_connection.driver_connection.fetch(
+                    strict_sql, *params
+                )
+                if rows:
+                    return [dict(row) for row in rows]
+
+                # Strict returned nothing — fall back to loose expanded OR pass
+                logger.debug(
+                    "BM25 strict pass returned 0 rows for '{}', trying loose pass (tsquery='{}')",
+                    query[:60],
+                    loose_tsquery_expr[:80] if loose_tsquery_expr else "none",
+                )
+                if loose_sql:
+                    rows = await raw_connection.driver_connection.fetch(
+                        loose_sql, *loose_params
+                    )
+                    return [dict(row) for row in rows]
+                return []
+
+            except Exception as exc:
+                # chunk_ts column may not exist yet on older DB instances
+                # (migration not yet applied).  Fall back silently.
+                logger.warning(
+                    "BM25 search failed (tsvector column missing?): {}", exc
+                )
+                return []
+
+    async def hybrid_search_chunks(
+        self,
+        query_embedding: List[float],
+        query: str,
+        organization_id: int,
+        limit: int = 20,
+        document_uuids: Optional[List[str]] = None,
+        embedding_model: Optional[str] = None,
+        rrf_k: int = 60,
+    ) -> List[dict]:
+        """Hybrid search: dense vector + BM25 merged via Reciprocal Rank Fusion.
+
+        Runs both searches in parallel, then fuses the ranked lists using RRF:
+            score(d) = Σ  1 / (k + rank_i(d))
+        where k=60 is the standard RRF constant that down-weights outlier ranks.
+
+        Args:
+            query_embedding: Dense embedding of the query.
+            query: Raw query text for BM25.
+            organization_id: Organization ID for scoping.
+            limit: Final number of results to return after fusion.
+            document_uuids: Optional document UUID filter.
+            embedding_model: Optional embedding model filter.
+            rrf_k: RRF constant (default 60 per the original paper).
+
+        Returns:
+            List of chunk dicts ordered by descending RRF score, each with an
+            added ``rrf_score`` field and both ``similarity`` and ``bm25_rank``
+            where available.
+        """
+        import asyncio
+
+        # Fetch more candidates than `limit` from each source so the fusion
+        # has enough signal — fetch 2× the requested limit from each.
+        fetch_limit = max(limit * 2, 40)
+
+        dense_task = asyncio.create_task(
+            self.search_similar_chunks(
+                query_embedding=query_embedding,
+                organization_id=organization_id,
+                limit=fetch_limit,
+                document_uuids=document_uuids,
+                embedding_model=embedding_model,
+            )
+        )
+        bm25_task = asyncio.create_task(
+            self.search_chunks_bm25(
+                query=query,
+                organization_id=organization_id,
+                limit=fetch_limit,
+                document_uuids=document_uuids,
+                embedding_model=embedding_model,
+            )
+        )
+
+        dense_results, bm25_results = await asyncio.gather(dense_task, bm25_task)
+
+        # Build per-chunk RRF scores.  Key by chunk id.
+        rrf_scores: dict[int, float] = {}
+        chunk_data: dict[int, dict] = {}
+
+        for rank, row in enumerate(dense_results, start=1):
+            cid = row["id"]
+            rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (rrf_k + rank)
+            chunk_data[cid] = {**row, "similarity": row.get("similarity", 0.0)}
+
+        for rank, row in enumerate(bm25_results, start=1):
+            cid = row["id"]
+            rrf_scores[cid] = rrf_scores.get(cid, 0.0) + 1.0 / (rrf_k + rank)
+            if cid not in chunk_data:
+                chunk_data[cid] = {**row, "similarity": 0.0}
+            chunk_data[cid]["bm25_rank"] = row.get("bm25_rank", 0.0)
+
+        # Sort by descending RRF score and slice to `limit`
+        sorted_ids = sorted(rrf_scores, key=lambda cid: rrf_scores[cid], reverse=True)
+        fused = []
+        for cid in sorted_ids[:limit]:
+            entry = dict(chunk_data[cid])
+            entry["rrf_score"] = round(rrf_scores[cid], 6)
+            fused.append(entry)
+
+        logger.info(
+            "Hybrid search: {} dense + {} BM25 → {} fused (org={})",
+            len(dense_results),
+            len(bm25_results),
+            len(fused),
+            organization_id,
+        )
+        return fused
+
     async def search_chunks_by_text(
         self,
         organization_id: int,

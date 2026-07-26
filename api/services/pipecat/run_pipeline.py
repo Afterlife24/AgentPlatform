@@ -732,6 +732,30 @@ async def _run_pipeline_impl(
         embeddings_endpoint = getattr(user_config.embeddings, "endpoint", None)
         embeddings_api_version = getattr(user_config.embeddings, "api_version", None)
 
+    # Extract LLM configuration for RAG pipeline (query expansion, reranking, routing)
+    rag_llm_api_key = None
+    rag_llm_model = None
+    rag_llm_base_url = None
+    if user_config and user_config.llm:
+        _llm_cfg = user_config.llm
+        _raw_key = getattr(_llm_cfg, "api_key", None)
+        # api_key may be a list (round-robin keys) — take first one
+        if isinstance(_raw_key, list):
+            rag_llm_api_key = _raw_key[0] if _raw_key else None
+        else:
+            rag_llm_api_key = _raw_key
+        rag_llm_model = getattr(_llm_cfg, "model", None)
+        rag_llm_base_url = getattr(_llm_cfg, "base_url", None)
+
+    # Dograh-managed LLM has no api_key on the config object (uses service key
+    # internally). Fall back to the embeddings key which is always an
+    # OpenAI-compatible BYOK key the user has configured — suitable for the
+    # lightweight gpt-4o-mini calls used by query expansion and reranking.
+    if not rag_llm_api_key and embeddings_api_key:
+        rag_llm_api_key = embeddings_api_key
+        rag_llm_model = "gpt-4o-mini"   # safe default, cheap + fast
+        rag_llm_base_url = None          # embeddings base_url may point to embedding endpoint, reset it
+
     # Check if the workflow has any active recordings so the engine can
     # include recording response mode instructions in all node prompts.
     has_recordings = await db_client.has_active_recordings(workflow.organization_id)
@@ -758,6 +782,9 @@ async def _run_pipeline_impl(
         embeddings_provider=embeddings_provider,
         embeddings_endpoint=embeddings_endpoint,
         embeddings_api_version=embeddings_api_version,
+        rag_llm_api_key=rag_llm_api_key,
+        rag_llm_model=rag_llm_model,
+        rag_llm_base_url=rag_llm_base_url,
         has_recordings=has_recordings,
         context_compaction_enabled=context_compaction_enabled,
     )

@@ -83,6 +83,9 @@ class PipecatEngine:
         embeddings_provider: Optional[str] = None,
         embeddings_endpoint: Optional[str] = None,
         embeddings_api_version: Optional[str] = None,
+        rag_llm_api_key: Optional[str] = None,
+        rag_llm_model: Optional[str] = None,
+        rag_llm_base_url: Optional[str] = None,
         has_recordings: bool = False,
         context_compaction_enabled: bool = False,
     ):
@@ -139,6 +142,11 @@ class PipecatEngine:
         self._embeddings_provider: Optional[str] = embeddings_provider
         self._embeddings_endpoint: Optional[str] = embeddings_endpoint
         self._embeddings_api_version: Optional[str] = embeddings_api_version
+
+        # LLM configuration for RAG pipeline (query expansion, reranking, routing)
+        self._rag_llm_api_key: Optional[str] = rag_llm_api_key
+        self._rag_llm_model: Optional[str] = rag_llm_model
+        self._rag_llm_base_url: Optional[str] = rag_llm_base_url
 
         # Audio configuration (set via set_audio_config from _run_pipeline)
         self._audio_config = None
@@ -355,6 +363,56 @@ class PipecatEngine:
         # Register function with LLM
         self.llm.register_function(name, transition_func)
 
+    async def _resolve_document_uuids(self, document_uuids: list[str]) -> list[str]:
+        """Resolve document UUIDs, healing any stale ones.
+
+        When a teammate re-uploads a knowledge base file they get a new UUID.
+        If the workflow still stores the old UUID (now inactive), this method
+        finds the newest active document with the same filename and substitutes
+        the fresh UUID automatically — no manual step required after re-upload.
+        """
+        try:
+            from api.db import db_client
+
+            org_id = await self._get_organization_id()
+
+            # All currently active docs for this org
+            active_docs = await db_client.get_documents_for_organization(
+                organization_id=org_id,
+            )
+            active_by_uuid: dict[str, object] = {d.document_uuid: d for d in active_docs}
+            # filename → most recent active UUID (list is ordered by id asc from DB)
+            active_by_filename: dict[str, str] = {
+                d.filename: d.document_uuid for d in active_docs
+            }
+
+            resolved: list[str] = []
+            for uuid in document_uuids:
+                if uuid in active_by_uuid:
+                    resolved.append(uuid)  # still valid
+                else:
+                    # Stale UUID — need the original filename to find replacement.
+                    # Query without is_active filter to find the old doc's filename.
+                    stale = await db_client.get_document_by_uuid(uuid)
+                    if stale and stale.filename in active_by_filename:
+                        fresh = active_by_filename[stale.filename]
+                        logger.info(
+                            "Auto-healed stale KB UUID {} → {} ({})",
+                            uuid[:8], fresh[:8], stale.filename,
+                        )
+                        resolved.append(fresh)
+                    else:
+                        logger.warning(
+                            "Stale KB UUID {} has no active replacement", uuid[:8]
+                        )
+                        resolved.append(uuid)
+
+            return resolved or document_uuids
+
+        except Exception as exc:
+            logger.warning("KB UUID resolution failed, using originals: {}", exc)
+            return document_uuids
+
     async def _register_knowledge_base_function(
         self, document_uuids: list[str]
     ) -> None:
@@ -385,7 +443,7 @@ class PipecatEngine:
                     query=query,
                     organization_id=organization_id,
                     document_uuids=document_uuids,
-                    limit=8,  # Return top 8 most relevant chunks
+                    limit=20,  # Fetch k=20 candidates; reranker trims to top-5
                     embeddings_api_key=self._embeddings_api_key,
                     embeddings_model=self._embeddings_model,
                     embeddings_base_url=self._embeddings_base_url,
@@ -395,6 +453,9 @@ class PipecatEngine:
                     correlation_id=self._call_context_vars.get(
                         MPS_CORRELATION_ID_CONTEXT_KEY
                     ),
+                    llm_api_key=self._rag_llm_api_key,
+                    llm_model=self._rag_llm_model,
+                    llm_base_url=self._rag_llm_base_url,
                     tracing_context=self._get_otel_context(),
                 )
 
@@ -646,9 +707,15 @@ class PipecatEngine:
 
         # Register knowledge base retrieval handler if node has documents
         if node.document_uuids:
-            await self._register_knowledge_base_function(node.document_uuids)
-            await self._register_knowledge_base_filter_function(node.document_uuids)
-            await self._register_knowledge_base_aggregate_function(node.document_uuids)
+            # Auto-heal stale UUIDs: if any stored UUID no longer maps to an
+            # active document (e.g. after a doc re-upload by a teammate), fall
+            # back to finding the latest active doc that shares the same
+            # filename. This means teammates never have to manually update UUIDs
+            # after re-uploading knowledge base files.
+            resolved_uuids = await self._resolve_document_uuids(node.document_uuids)
+            await self._register_knowledge_base_function(resolved_uuids)
+            await self._register_knowledge_base_filter_function(resolved_uuids)
+            await self._register_knowledge_base_aggregate_function(resolved_uuids)
 
         # Compose prompt and functions via the context composer module
         system_prompt = compose_system_prompt_for_node(

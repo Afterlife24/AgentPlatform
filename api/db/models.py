@@ -1451,3 +1451,56 @@ class KnowledgeBaseChunkModel(Base):
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
     )
+
+
+class RAGRetrievalLogModel(Base):
+    """Feedback loop: one row per retrieve_from_knowledge_base() call.
+
+    Logged fire-and-forget after every retrieval so we can analyse:
+    - Which queries hit which route (semantic / metadata_filter / aggregation)
+    - Which chunks are returned and their rerank scores
+    - Queries that consistently return low-scoring chunks (need re-ingestion)
+    - Latency trends per route
+    """
+
+    __tablename__ = "rag_retrieval_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Scoping
+    organization_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    workflow_run_id = Column(Integer, nullable=True)  # null for manual /search calls
+
+    # Query details
+    query = Column(Text, nullable=False)
+    expanded_queries = Column(JSON, nullable=False, default=list)  # list[str]
+
+    # Routing outcome
+    route = Column(String(50), nullable=False, default="semantic")
+
+    # Retrieved chunks summary — stored as JSON list of dicts:
+    # [{"chunk_id": int, "filename": str, "rerank_score": float, "rrf_score": float}]
+    retrieved_chunks = Column(JSON, nullable=False, default=list)
+
+    # Aggregate quality signal (avg rerank score across returned chunks)
+    avg_rerank_score = Column(Float, nullable=True)
+
+    # How many candidates were fetched before reranking
+    candidates_fetched = Column(Integer, nullable=True)
+
+    # Timestamp
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    # Relationships
+    organization = relationship("OrganizationModel")
+
+    __table_args__ = (
+        Index("ix_rag_logs_organization_id", "organization_id"),
+        Index("ix_rag_logs_workflow_run_id", "workflow_run_id"),
+        Index("ix_rag_logs_route", "route"),
+        Index("ix_rag_logs_created_at", "created_at"),
+    )

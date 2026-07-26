@@ -545,6 +545,25 @@ async def execute_text_chat_pending_turn(
             base_url=getattr(user_config.embeddings, "base_url", None),
         )
 
+    # Extract LLM configuration for RAG pipeline (query expansion, reranking, routing)
+    rag_llm_api_key = None
+    rag_llm_model = None
+    rag_llm_base_url = None
+    if user_config.llm:
+        _raw_key = getattr(user_config.llm, "api_key", None)
+        if isinstance(_raw_key, list):
+            rag_llm_api_key = _raw_key[0] if _raw_key else None
+        else:
+            rag_llm_api_key = _raw_key
+        rag_llm_model = getattr(user_config.llm, "model", None)
+        rag_llm_base_url = getattr(user_config.llm, "base_url", None)
+
+    # Dograh-managed LLM has no api_key — fall back to embeddings key
+    if not rag_llm_api_key and embeddings_api_key:
+        rag_llm_api_key = embeddings_api_key
+        rag_llm_model = "gpt-4o-mini"
+        rag_llm_base_url = None
+
     has_recordings = await db_client.has_active_recordings(workflow.organization_id)
     context_compaction_enabled = (workflow.workflow_configurations or {}).get(
         "context_compaction_enabled", False
@@ -560,6 +579,9 @@ async def execute_text_chat_pending_turn(
         embeddings_api_key=embeddings_api_key,
         embeddings_model=embeddings_model,
         embeddings_base_url=embeddings_base_url,
+        rag_llm_api_key=rag_llm_api_key,
+        rag_llm_model=rag_llm_model,
+        rag_llm_base_url=rag_llm_base_url,
         has_recordings=has_recordings,
         context_compaction_enabled=context_compaction_enabled,
     )

@@ -16,6 +16,7 @@ from api.db.models import KnowledgeBaseChunkModel
 from api.services.gen_ai import build_embedding_service
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.storage import storage_fs
+from api.services.workflow.tools.chunk_contextualiser import contextualise_chunks
 from api.services.workflow.tools.metadata_extraction import (
     extract_metadata_from_structured_json,
     extract_metadata_from_text,
@@ -264,6 +265,50 @@ async def process_knowledge_base_document(
         mps_chunks = mps_response.get("chunks", [])
         if not mps_chunks:
             logger.warning(f"Document {document_id}: MPS returned zero chunks")
+
+        # Step 1 — Chunk contextualisation (Anthropic contextual retrieval pattern).
+        # Enrich each chunk's contextualized_text with a document-level summary
+        # sentence before embedding.  This improves vector quality and downstream
+        # recall.  Falls back silently if no LLM key is configured or the call fails.
+        llm_api_key_for_ctx = None
+        llm_model_for_ctx = None
+        llm_base_url_for_ctx = None
+        llm_provider_for_ctx = None
+        if retrieval_mode == "chunked" and document.created_by:
+            from api.services.configuration.ai_model_configuration import (
+                get_resolved_ai_model_configuration,
+            )
+            try:
+                ctx_config = await get_resolved_ai_model_configuration(
+                    user_id=document.created_by,
+                    organization_id=document.organization_id,
+                )
+                ctx_llm = ctx_config.effective.llm
+                if ctx_llm:
+                    llm_api_key_for_ctx = getattr(ctx_llm, "api_key", None)
+                    llm_model_for_ctx = getattr(ctx_llm, "model", None)
+                    llm_base_url_for_ctx = getattr(ctx_llm, "base_url", None)
+                    llm_provider_for_ctx = getattr(ctx_llm, "provider", None)
+            except Exception as _ctx_err:
+                logger.debug(f"Could not resolve LLM config for contextualisation: {_ctx_err}")
+
+        if llm_api_key_for_ctx and mps_chunks:
+            logger.info(
+                f"Contextualising {len(mps_chunks)} chunks for document {document_id} "
+                f"using model '{llm_model_for_ctx or 'gpt-4o-mini'}'"
+            )
+            mps_chunks = await contextualise_chunks(
+                chunks=mps_chunks,
+                filename=filename,
+                llm_provider=llm_provider_for_ctx,
+                llm_api_key=llm_api_key_for_ctx,
+                llm_model=llm_model_for_ctx,
+                llm_base_url=llm_base_url_for_ctx,
+            )
+        else:
+            logger.debug(
+                f"Skipping contextualisation for document {document_id} — no LLM key available"
+            )
 
         # Attempt to enrich chunk_metadata from structured JSON sources.
         # If the source file is JSON with a known structure (e.g., equipment catalog),

@@ -1,0 +1,221 @@
+{
+  "title": "About Johnson Arabia — Company Knowledge Base",
+  "version": "2.0",
+  "schema": "chunked-company-kb/2.0",
+  "description": "Self-contained retrieval chunks about Johnson Arabia as a company: profile, leadership, locations & contact, HSE policy and IPAF training center.",
+  "chunking_level": "chunk",
+  "chunking_rule": "Each object in `chunks` is one self-contained chunk. Match user queries against the chunk title and metadata keywords; answer from the section text. Do not merge chunks during indexing.",
+  "taxonomy": {
+    "Company Info": {
+      "Overview": [
+        "Introduction",
+        "Company Profile"
+      ],
+      "Leadership": [
+        "MD Message",
+        "Management Team"
+      ],
+      "Contact": [
+        "Locations"
+      ],
+      "Safety": [
+        "HSE Policy"
+      ],
+      "Training": [
+        "IPAF Training"
+      ]
+    }
+  },
+  "chunks": [
+    {
+      "id": "company-introduction",
+      "kind": "topic",
+      "title": "Johnson Arabia at a Glance",
+      "metadata": {
+        "parent_category": "Company Info",
+        "category": "Overview",
+        "sub_category": "Introduction",
+        "keywords": [
+          "johnson arabia",
+          "about johnson arabia",
+          "crane rental company",
+          "AWP rental company",
+          "heavy equipment rental UAE",
+          "lifting solutions company",
+          "established 1999",
+          "who is johnson arabia"
+        ]
+      },
+      "sections": [
+        {
+          "title": "Johnson Arabia at a Glance",
+          "text": "JOHNSON ARABIA provides Mobile Cranes for hire which offers cost-efficient and versatile lift engineering solutions to various clients and industries that include petrochemical, construction and aviation industries.\nJOHNSON ARABIA provides Aerial Work Platforms for hire that offer safe, efficient, flexible and profitable services for Airports, Malls, Bridges, Warehouses, Events, Projects and Construction sites among others.\nJohnson Arabia decided to become an internationally approved Training Center in 2015 through which they can help educate AWP users in the market on the safe, competent, productive and effective use of AWPs.\nJOHNSON ARABIA, established in 1999,is the most valuable market leader that sets trends and records around the region.\nJOHNSON ARABIA offers diligent and professional services committed to excellence.\nWe ensure safety, availibility and complete cost- effectiveness of your project.\nWe are dedicated to Safety, Maintenance, Availability, Reliability and Total cost effectiveness.\nEstablished in 1999, Johnson Arabia brings to you 25 years of experience in cranes and AWP's\nWe have a dedicated team available 24 / 7 to support your requirements."
+        }
+      ]
+    },
+    {
+      "id": "company-overview",
+      "kind": "topic",
+      "title": "Company Overview",
+      "metadata": {
+        "parent_category": "Company Info",
+        "category": "Overview",
+        "sub_category": "Company Profile",
+        "keywords": [
+          "company profile",
+          "about us",
+          "johnson arabia overview",
+          "fleet size",
+          "250 mobile cranes",
+          "900 aerial work platforms",
+          "Dubai Abu Dhabi Oman Saudi Arabia",
+          "established 1999",
+          "market leader"
+        ]
+      },
+      "sections": [
+        {
+          "title": "Company Overview",
+          "text": "JOHNSON ARABIA is a Mobile Crane and Aerial Work Platforms (AWP) hire company based in United Arab Emirates which offers cost-efficient and versatile lift engineering solutions to the petrochemical, civil engineering, construction, industrial, utilities, aviation, marine and other industries and clients.\nJOHNSON ARABIA was established in 1999 and is the most valuable market leader that sets trends and records around the region with dedicated and professional staff committed to excellence in Safety, Maintenance, Availability, Reliability and Total cost effectiveness.\nFrom its initial location in Dubai, JOHNSON ARABIA has expanded its operations in Abu Dhabi, Oman and Saudi Arabia. JOHNSON ARABIA currently operates its own fleet of approximately 250 Mobile Cranes and 900 Aerial Work Platforms."
+        }
+      ]
+    },
+    {
+      "id": "company-md-message",
+      "kind": "topic",
+      "title": "Managing Director's Message",
+      "metadata": {
+        "parent_category": "Company Info",
+        "category": "Leadership",
+        "sub_category": "MD Message",
+        "keywords": [
+          "managing director",
+          "MD message",
+          "leadership",
+          "company values",
+          "reputation",
+          "customer commitment"
+        ]
+      },
+      "sections": [
+        {
+          "title": "Managing Director's Message",
+          "text": "Johnson Arabia has built a strong reputation for providing reliable and cost effective but above all safe crane & access solutions for twenty five years.\nThe company is dedicated to the welfare of its employees and committed to provide the very best services to its customers and partners. When you choose Johnson you become a part of our culture and philosophy to never accept anything other than the best quality products, providing the highest level of support and to never stop improving through training and sharing knowledge.\nJohnson Arabia will be enhancing its products and services in the coming months and years and will be expanding into many different regions. Thank you for your trust in our business, we look forward to sharing our philosophy with you and meeting new customers, partners and friends."
+        }
+      ]
+    },
+    {
+      "id": "company-management-team",
+      "kind": "topic",
+      "title": "Management Team",
+      "metadata": {
+        "parent_category": "Company Info",
+        "category": "Leadership",
+        "sub_category": "Management Team",
+        "keywords": [
+          "management team",
+          "leadership team",
+          "directors",
+          "who runs johnson arabia",
+          "company management",
+          "contact management"
+        ]
+      },
+      "sections": [
+        {
+          "title": "Management Team",
+          "text": "MARTIN KIRBY\nRUWAN DUNUWILA\nMOHAMMAD FAREED NASER\nEDWIN BIJMHOLT\nJOE KEELY"
+        }
+      ]
+    },
+    {
+      "id": "company-locations-contact",
+      "kind": "topic",
+      "title": "Locations & Contact Details",
+      "metadata": {
+        "parent_category": "Company Info",
+        "category": "Contact",
+        "sub_category": "Locations",
+        "keywords": [
+          "contact johnson arabia",
+          "phone number",
+          "Dubai head office",
+          "Abu Dhabi office",
+          "Saudi Arabia office",
+          "address",
+          "email",
+          "800 LIFT",
+          "971 4 584 7551",
+          "locations",
+          "branches",
+          "how to contact"
+        ]
+      },
+      "sections": [
+        {
+          "title": "Locations & Contact Details",
+          "text": "Head Office - Dubai, UAE\nP.O. Box 71240, Dubai, UAE\n+971 4 584 7551\n+971 4 584 7532\nAbu Dhabi, UAE\n+971 2 550 4988\n+971 2 550 4978\n+966 11450 0175\n800-123-LIFT (5438)"
+        }
+      ]
+    },
+    {
+      "id": "company-hse",
+      "kind": "topic",
+      "title": "Health, Safety & Environment Policy",
+      "metadata": {
+        "parent_category": "Company Info",
+        "category": "Safety",
+        "sub_category": "HSE Policy",
+        "keywords": [
+          "health and safety",
+          "HSE policy",
+          "safety commitment",
+          "zero incidents",
+          "safety standards",
+          "safe lifting",
+          "safety first"
+        ]
+      },
+      "sections": [
+        {
+          "title": "Health, Safety & Environment Policy",
+          "text": "Johnson Arabia LLC believes that the Health, Safety and Environment along with the welfare of its employees and others affected by its operations should have equal importance to quality, cost, production and morale. Our mission is to provide professional crane and work platform services to our clients while encouraging our team to work effectively in accordance our Health and Safety Management System.\nThis policy can only be successful with the active co-operation of all management, employees, contractors and visitors, who have a duty to offer all necessary assistance to ensure the Health and Safety of them and others."
+        },
+        {
+          "title": "Lift Planning & Engineering Services",
+          "text": "Johnson Arabia provides lift planning, method statements, site surveys, ground condition assessments, and slab loading calculations. No obligation — our engineers are available for consultation on any lifting project."
+        }
+      ]
+    },
+    {
+      "id": "company-training",
+      "kind": "topic",
+      "title": "IPAF Training Center",
+      "metadata": {
+        "parent_category": "Company Info",
+        "category": "Training",
+        "sub_category": "IPAF Training",
+        "keywords": [
+          "IPAF training",
+          "AWP training",
+          "training center",
+          "operator training",
+          "IPAF certified",
+          "powered access training",
+          "safety training",
+          "IPAF course UAE"
+        ]
+      },
+      "sections": [
+        {
+          "title": "IPAF Training Center",
+          "text": "Johnson Arabia lays a high emphasis on safety, be it their own people or their clients or suppliers. After building a strong foundation in the AWP industry since 2004, Johnson Arabia decided to become an internationally approved Training Center in 2015 through which they can help educate AWP users in the market on the safe, competent, productive and effective use of AWPs. This is in line with Johnson Arabia's plans to contribute to the growth of the markets they operate in. Since 2015, Johnson Arabia is an accredited member of the International Powered Access Federation (IPAF) providing training in various categories around the UAE.\nIPAF promotes the safe and effective use of Aerial Work Platforms worldwide in the widest sense - through providing technical advice and information; through influencing and interpreting legislation and standards; and through safety initiatives and training programmes. IPAF is a not-for-profit organisation owned by its members, which include manufacturers, rental companies, distributors, contractors and users. IPAF members operate a majority of the MEWP rental fleet worldwide and manufacture about 85% of platforms on the market."
+        },
+        {
+          "title": "Crane Operator Training",
+          "text": "Johnson Arabia provides in-house crane operator training covering all crane types in their fleet. Specialist categories available for mobile cranes, crawler cranes, and tower cranes."
+        }
+      ]
+    }
+  ]
+}

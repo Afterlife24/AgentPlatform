@@ -549,3 +549,74 @@ async def get_metadata_fields(
         raise HTTPException(
             status_code=500, detail="Failed to get metadata fields"
         ) from exc
+
+
+@router.get(
+    "/retrieval-logs",
+    summary="Get RAG retrieval logs for feedback analysis",
+)
+async def get_retrieval_logs(
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    route: Annotated[
+        Optional[str],
+        Query(description="Filter by route: semantic, metadata_filter, aggregation, out_of_scope"),
+    ] = None,
+    user=Depends(get_user),
+):
+    """Return recent RAG retrieval logs for the org.
+
+    Use this to close the feedback loop:
+    - Identify queries with low avg_rerank_score (bad retrieval quality)
+    - See which route is being taken per query type
+    - Find chunks that are never returned (dead chunks in the index)
+    - Spot queries that keep expanding to unrelated variants
+
+    Access Control:
+    * Users can only see logs from their own organization.
+    """
+    try:
+        from api.db.models import RAGRetrievalLogModel
+        from sqlalchemy import select
+
+        async with db_client.async_session() as session:
+            query_stmt = (
+                select(RAGRetrievalLogModel)
+                .where(
+                    RAGRetrievalLogModel.organization_id == user.selected_organization_id
+                )
+                .order_by(RAGRetrievalLogModel.created_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            if route:
+                query_stmt = query_stmt.where(RAGRetrievalLogModel.route == route)
+
+            result = await session.execute(query_stmt)
+            logs = result.scalars().all()
+
+        return {
+            "logs": [
+                {
+                    "id": log.id,
+                    "query": log.query,
+                    "expanded_queries": log.expanded_queries,
+                    "route": log.route,
+                    "retrieved_chunks": log.retrieved_chunks,
+                    "avg_rerank_score": log.avg_rerank_score,
+                    "candidates_fetched": log.candidates_fetched,
+                    "workflow_run_id": log.workflow_run_id,
+                    "created_at": log.created_at.isoformat() if log.created_at else None,
+                }
+                for log in logs
+            ],
+            "total": len(logs),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    except Exception as exc:
+        logger.error(f"Error fetching retrieval logs: {exc}")
+        raise HTTPException(
+            status_code=500, detail="Failed to fetch retrieval logs"
+        ) from exc
