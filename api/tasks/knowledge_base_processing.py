@@ -292,7 +292,15 @@ async def process_knowledge_base_document(
             except Exception as _ctx_err:
                 logger.debug(f"Could not resolve LLM config for contextualisation: {_ctx_err}")
 
-        if llm_api_key_for_ctx and mps_chunks:
+        # Detect structured JSON — these already have rich metadata and
+        # contextualised sections, so LLM contextualisation is redundant and
+        # just adds processing time (1 API call per chunk).
+        is_structured_json = (
+            mime_type in ("application/json", "text/json")
+            or s3_key.endswith(".json")
+        )
+
+        if llm_api_key_for_ctx and mps_chunks and not is_structured_json:
             logger.info(
                 f"Contextualising {len(mps_chunks)} chunks for document {document_id} "
                 f"using model '{llm_model_for_ctx or 'gpt-4o-mini'}'"
@@ -307,7 +315,8 @@ async def process_knowledge_base_document(
             )
         else:
             logger.debug(
-                f"Skipping contextualisation for document {document_id} — no LLM key available"
+                f"Skipping contextualisation for document {document_id} — "
+                f"{'structured JSON' if is_structured_json else 'no LLM key available'}"
             )
 
         # Attempt to enrich chunk_metadata from structured JSON sources.

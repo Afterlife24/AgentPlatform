@@ -972,7 +972,8 @@ class KnowledgeBaseClient(BaseDBClient):
                 placeholders = ", ".join(
                     f"${param_index + i}" for i in range(len(document_uuids))
                 )
-                filter_conditions.append(f"d.document_uuid IN ({placeholders})")
+                filter_conditions.append(
+                    f"d.document_uuid IN ({placeholders})")
                 params.extend(document_uuids)
                 param_index += len(document_uuids)
 
@@ -1041,7 +1042,8 @@ class KnowledgeBaseClient(BaseDBClient):
                     letters = match.group(1).lower()
                     digits = match.group(2)
                     # Expand: "ltm1450" | (ltm & 1450)
-                    expanded_parts.append(f"({letters}{digits} | ({letters} & {digits}))")
+                    expanded_parts.append(
+                        f"({letters}{digits} | ({letters} & {digits}))")
                     remainder = remainder.replace(match.group(0), "")
 
                 # Remaining non-model words → add as individual OR terms
@@ -1068,6 +1070,34 @@ class KnowledgeBaseClient(BaseDBClient):
                 # when passing a tsquery string as a $N parameter inside
                 # to_tsquery('english', $N) without an explicit ::text cast.
                 safe_tsquery_literal = loose_tsquery_expr.replace("'", "''")
+
+                # Rebuild filter and params WITHOUT the $1 query param (it's
+                # inlined as the tsquery literal now).  Renumber: $1=org_id,
+                # $2=limit, $3+=document_uuids/embedding_model.
+                loose_filter_conditions = [
+                    "c.organization_id = $1",
+                    "d.is_active = true",
+                ]
+                loose_params: list = [organization_id, limit]
+                loose_param_index = 3
+
+                if document_uuids:
+                    placeholders = ", ".join(
+                        f"${loose_param_index + i}" for i in range(len(document_uuids))
+                    )
+                    loose_filter_conditions.append(
+                        f"d.document_uuid IN ({placeholders})")
+                    loose_params.extend(document_uuids)
+                    loose_param_index += len(document_uuids)
+
+                if embedding_model:
+                    loose_filter_conditions.append(
+                        f"c.embedding_model = ${loose_param_index}")
+                    loose_params.append(embedding_model)
+                    loose_param_index += 1
+
+                loose_filter_clause = " AND ".join(loose_filter_conditions)
+
                 loose_sql = f"""
                     SELECT
                         c.id,
@@ -1086,14 +1116,13 @@ class KnowledgeBaseClient(BaseDBClient):
                         ) AS bm25_rank
                     FROM knowledge_base_chunks c
                     JOIN knowledge_base_documents d ON c.document_id = d.id
-                    WHERE {filter_clause}
+                    WHERE {loose_filter_clause}
                       AND to_tsvector('english',
                             coalesce(c.chunk_text, '') || ' ' || coalesce(c.contextualized_text, '')
                           ) @@ to_tsquery('english', '{safe_tsquery_literal}')
                     ORDER BY bm25_rank DESC
-                    LIMIT $3
+                    LIMIT $2
                 """
-                loose_params = list(params)
             else:
                 loose_sql = None
                 loose_params = params
@@ -1201,7 +1230,8 @@ class KnowledgeBaseClient(BaseDBClient):
             chunk_data[cid]["bm25_rank"] = row.get("bm25_rank", 0.0)
 
         # Sort by descending RRF score and slice to `limit`
-        sorted_ids = sorted(rrf_scores, key=lambda cid: rrf_scores[cid], reverse=True)
+        sorted_ids = sorted(
+            rrf_scores, key=lambda cid: rrf_scores[cid], reverse=True)
         fused = []
         for cid in sorted_ids[:limit]:
             entry = dict(chunk_data[cid])

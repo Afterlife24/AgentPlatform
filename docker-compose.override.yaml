@@ -104,9 +104,15 @@ services:
       dockerfile: ui/Dockerfile
       args:
         - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:3000}
+      # Cap build-time memory so the Next.js compile doesn't OOM
+      shm_size: "256m"
     image: dograh-local/dograh-ui:local
     pull_policy: never
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 3g
     environment:
       NEXT_PUBLIC_BACKEND_URL: "${NEXT_PUBLIC_BACKEND_URL:-http://localhost:3000}"
 
