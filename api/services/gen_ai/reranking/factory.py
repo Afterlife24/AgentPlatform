@@ -34,25 +34,11 @@ def build_reranking_service(
         A configured BaseRerankingService, or None if no API key is provided
         or if the key is a Dograh proxy key (which doesn't support scoring prompts).
     """
-    if not api_key:
-        logger.debug(
-            "No API key provided for reranking — skipping reranker construction"
-        )
-        return None
-
-    # Dograh proxy keys (oss_sk_*) return empty responses for scoring prompts.
-    # Skip reranking entirely for these — RRF ordering is sufficient.
-    if api_key.startswith("oss_sk_"):
-        logger.debug(
-            "Dograh proxy key detected — skipping reranker (not supported)"
-        )
-        return None
-
-    logger.debug(
-        "Building LLM reranking service (model={})", model or "gpt-4o-mini"
-    )
-    return LLMRerankingService(
-        api_key=api_key,
-        model=model,
-        base_url=base_url,
-    )
+    # Reranking is disabled for ALL providers.
+    # The LLM reranker added latency and inconsistency without reliable
+    # quality gains (the Dograh proxy returns empty scores, and even with a
+    # real key the extra LLM round-trips per query slowed responses). RRF
+    # ordering from the hybrid dense + BM25 search is used directly instead.
+    # To re-enable, restore the provider-specific construction below.
+    logger.debug("Reranking disabled globally — using RRF order")
+    return None
