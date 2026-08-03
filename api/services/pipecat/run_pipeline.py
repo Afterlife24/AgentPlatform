@@ -769,6 +769,29 @@ async def _run_pipeline_impl(
         logger.info("Disabling context_compaction_enabled for realtime workflow run")
         context_compaction_enabled = False
 
+    # Per-workflow RAG tuning.
+    # Priority: workflow_configurations (saved from UI settings page) first,
+    # then workflow_json rag_settings (set programmatically), then defaults.
+    _rag_cfg = run_configs.get("rag_settings") or {}
+    _rag_graph = getattr(workflow_graph, "rag_settings", None)
+    rag_query_expansion_enabled = _rag_cfg.get(
+        "query_expansion_enabled",
+        getattr(_rag_graph, "query_expansion_enabled", True)
+    )
+    rag_reranking_enabled = _rag_cfg.get(
+        "reranking_enabled",
+        getattr(_rag_graph, "reranking_enabled", True)
+    )
+    rag_top_n_chunks = _rag_cfg.get(
+        "top_n_chunks",
+        getattr(_rag_graph, "top_n_chunks", 12)
+    )
+    logger.info(
+        f"[run {workflow_run_id}] RAG settings: expansion={rag_query_expansion_enabled}, "
+        f"reranking={rag_reranking_enabled}, top_n={rag_top_n_chunks} "
+        f"(source={'workflow_configurations' if _rag_cfg else 'workflow_json/default'})"
+    )
+
     engine = PipecatEngine(
         llm=llm,
         inference_llm=inference_llm,
@@ -787,6 +810,9 @@ async def _run_pipeline_impl(
         rag_llm_base_url=rag_llm_base_url,
         has_recordings=has_recordings,
         context_compaction_enabled=context_compaction_enabled,
+        rag_query_expansion_enabled=rag_query_expansion_enabled,
+        rag_reranking_enabled=rag_reranking_enabled,
+        rag_top_n_chunks=rag_top_n_chunks,
     )
 
     # Create pipeline components

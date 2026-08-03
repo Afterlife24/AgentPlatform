@@ -45,8 +45,10 @@ ENV NEXT_PUBLIC_CHATWOOT_TOKEN="3fkFx2mCEjNHjM9gaNc4A82X"
 ENV BACKEND_URL="http://api:8000"
 
 # Build the application with standalone mode
-# Limit Node.js heap to 2 GB to fit within constrained Docker memory
-ENV NODE_OPTIONS="--max-old-space-size=2048"
+# Node heap set to 3 GB — the Next.js production compile peaks just above 2 GB
+# and OOMs at the old 2048 limit. Keep this below the container memory limit in
+# docker-compose.override.yaml (4 GB) so Node's non-heap usage still has room.
+ENV NODE_OPTIONS="--max-old-space-size=3072"
 RUN npm run build && \
     rm -rf /tmp/* /root/.npm /root/.next/cache
 

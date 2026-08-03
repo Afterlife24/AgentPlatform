@@ -1028,9 +1028,47 @@ class RFEdgeDTO(BaseModel):
     data: EdgeDataDTO
 
 
+class RagSettingsDTO(BaseModel):
+    """Per-workflow RAG pipeline tuning.
+
+    Each agent (workflow) controls its own retrieval trade-offs. Voice agents
+    typically disable expansion and reranking and lower top_n to stay under a
+    ~2s budget; text/WhatsApp agents leave everything on for best recall since
+    a few extra seconds are acceptable there.
+    """
+
+    query_expansion_enabled: bool = Field(
+        default=True,
+        description=(
+            "Generate alternative phrasings of the query before searching. "
+            "Improves recall on vague questions but costs one extra LLM call "
+            "(~2-3s). Disable for latency-sensitive voice agents."
+        ),
+    )
+    reranking_enabled: bool = Field(
+        default=True,
+        description=(
+            "Rescore retrieved candidates with the reranking model before "
+            "sending them to the LLM. Improves precision but adds latency. "
+            "Ignored when no reranking-capable key is configured."
+        ),
+    )
+    top_n_chunks: int = Field(
+        default=12,
+        ge=1,
+        le=50,
+        description=(
+            "How many chunks to send to the LLM after ranking. Fewer chunks "
+            "means a faster answer and lower token cost; more chunks means a "
+            "better chance the answer is present."
+        ),
+    )
+
+
 class ReactFlowDTO(BaseModel):
     nodes: List[RFNodeDTO]
     edges: List[RFEdgeDTO]
+    rag_settings: RagSettingsDTO = Field(default_factory=RagSettingsDTO)
 
     @model_validator(mode="after")
     def _referential_integrity(self):

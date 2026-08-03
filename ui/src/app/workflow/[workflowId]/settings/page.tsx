@@ -1,7 +1,7 @@
 "use client";
 
 import { format } from "date-fns";
-import { ArrowLeft, BookA, Brain, CalendarIcon, Clipboard, Download, ExternalLink, FileDown, Fingerprint, Loader2, Mic, Pause, PhoneOff, Play, Rocket, Settings, Trash2Icon, Upload, Variable, X } from "lucide-react";
+import { ArrowLeft, BookA, Brain, CalendarIcon, Clipboard, Download, ExternalLink, FileDown, Fingerprint, Loader2, Mic, Pause, PhoneOff, Play, Rocket, Settings, Trash2Icon, Upload, Variable, X, Zap } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -46,9 +46,11 @@ import logger from "@/lib/logger";
 import {
     type AmbientNoiseConfiguration,
     DEFAULT_PROVISIONAL_VAD_PAUSE_SECS,
+    DEFAULT_RAG_SETTINGS,
     DEFAULT_TURN_START_MIN_WORDS,
     DEFAULT_VOICEMAIL_DETECTION_CONFIGURATION,
     DEFAULT_WORKFLOW_CONFIGURATIONS,
+    type RagSettings,
     TURN_START_STRATEGY_OPTIONS,
     type TurnStartStrategy,
     type TurnStopStrategy,
@@ -94,6 +96,7 @@ Respond with ONLY "CONVERSATION" if a person answered, or "VOICEMAIL" if it's vo
 const NAV_ITEMS = [
     { id: "general", label: "General", icon: Settings },
     { id: "models", label: "Model Overrides", icon: Brain },
+    { id: "rag", label: "RAG Pipeline", icon: Zap },
     { id: "variables", label: "Template Variables", icon: Variable },
     { id: "dictionary", label: "Dictionary", icon: BookA },
     { id: "voicemail", label: "Voicemail Detection", icon: PhoneOff },
@@ -880,6 +883,139 @@ function TemplateVariablesSection({
 // ---------------------------------------------------------------------------
 // Section: Dictionary
 // ---------------------------------------------------------------------------
+// Section: RAG Pipeline Settings
+// ---------------------------------------------------------------------------
+
+function RagSettingsSection({
+    workflowConfigurations,
+    workflowName,
+    onSave,
+}: {
+    workflowConfigurations: WorkflowConfigurations;
+    workflowName: string;
+    onSave: (config: WorkflowConfigurations, name: string) => Promise<void>;
+}) {
+    const current = workflowConfigurations.rag_settings ?? DEFAULT_RAG_SETTINGS;
+    const [queryExpansionEnabled, setQueryExpansionEnabled] = useState<boolean>(current.query_expansion_enabled);
+    const [rerankingEnabled, setRerankingEnabled] = useState<boolean>(current.reranking_enabled);
+    const [topNChunks, setTopNChunks] = useState<number>(current.top_n_chunks);
+    const [isSaving, setIsSaving] = useState(false);
+
+    const isDirty =
+        queryExpansionEnabled !== current.query_expansion_enabled ||
+        rerankingEnabled !== current.reranking_enabled ||
+        topNChunks !== current.top_n_chunks;
+
+    useUnsavedChanges("rag", isDirty);
+
+    const handleSave = async () => {
+        setIsSaving(true);
+        try {
+            await onSave({
+                ...workflowConfigurations,
+                rag_settings: {
+                    query_expansion_enabled: queryExpansionEnabled,
+                    reranking_enabled: rerankingEnabled,
+                    top_n_chunks: topNChunks,
+                },
+            }, workflowName);
+        } catch (err) {
+            console.error("Failed to save RAG settings:", err);
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    return (
+        <Card id="rag">
+            <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                    <Zap className="h-4 w-4" />
+                    RAG Pipeline
+                </CardTitle>
+                <CardDescription>
+                    Control which RAG pipeline steps run for this agent. Disable steps to reduce latency —
+                    useful for voice agents where response time matters more than recall depth.
+                </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+                {/* Query Expansion */}
+                <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <h3 className="text-sm font-medium">Query Expansion</h3>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                                Generates 2–3 alternative phrasings of the user query before searching. Improves recall
+                                on vague questions but costs one extra LLM call (~2–3 s). Disable for voice agents.
+                            </p>
+                        </div>
+                        <Switch
+                            id="rag-query-expansion"
+                            checked={queryExpansionEnabled}
+                            onCheckedChange={setQueryExpansionEnabled}
+                        />
+                    </div>
+                </div>
+
+                <Separator />
+
+                {/* Reranking */}
+                <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <h3 className="text-sm font-medium">Reranking</h3>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                                Rescores retrieved chunks with a reranking model before sending them to the LLM.
+                                Improves precision. Has no effect when no reranking-capable key is configured.
+                            </p>
+                        </div>
+                        <Switch
+                            id="rag-reranking"
+                            checked={rerankingEnabled}
+                            onCheckedChange={setRerankingEnabled}
+                        />
+                    </div>
+                </div>
+
+                <Separator />
+
+                {/* Top-N Chunks */}
+                <div className="space-y-2">
+                    <Label htmlFor="rag-top-n" className="text-sm font-medium">Top-N Chunks</Label>
+                    <p className="text-xs text-muted-foreground">
+                        How many retrieved chunks are sent to the LLM. Fewer means a faster, cheaper answer.
+                        More means a better chance the right information is present. Range: 1–50.
+                    </p>
+                    <div className="flex items-center gap-3">
+                        <Input
+                            id="rag-top-n"
+                            type="number"
+                            min={1}
+                            max={50}
+                            value={topNChunks}
+                            onChange={(e) => {
+                                const v = parseInt(e.target.value, 10);
+                                if (!isNaN(v) && v >= 1 && v <= 50) setTopNChunks(v);
+                            }}
+                            className="w-24"
+                        />
+                        <span className="text-xs text-muted-foreground">Default: 12 &nbsp;·&nbsp; Voice recommended: 6 &nbsp;·&nbsp; WhatsApp recommended: 12</span>
+                    </div>
+                </div>
+            </CardContent>
+            <CardFooter className="border-t pt-6">
+                <Button onClick={handleSave} disabled={isSaving || !isDirty} size="sm">
+                    {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                    Save RAG Settings
+                </Button>
+            </CardFooter>
+        </Card>
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Section: Dictionary
+// ---------------------------------------------------------------------------
 
 function DictionarySection({
     dictionary,
@@ -1540,6 +1676,13 @@ function WorkflowSettingsInner({
                                 organizationModelConfiguration={organizationModelConfiguration}
                                 modelConfigurationLoading={modelConfigurationLoading}
                                 modelConfigurationError={modelConfigurationError}
+                            />
+
+                            {/* RAG Pipeline Settings */}
+                            <RagSettingsSection
+                                workflowConfigurations={workflowConfigurations}
+                                workflowName={workflowName || workflow.name}
+                                onSave={saveWorkflowConfigurations}
                             />
 
                             {/* Template Variables */}

@@ -88,6 +88,9 @@ class PipecatEngine:
         rag_llm_base_url: Optional[str] = None,
         has_recordings: bool = False,
         context_compaction_enabled: bool = False,
+        rag_query_expansion_enabled: bool = True,
+        rag_reranking_enabled: bool = True,
+        rag_top_n_chunks: int = 12,
     ):
         self.task = task
         self.llm = llm
@@ -147,6 +150,13 @@ class PipecatEngine:
         self._rag_llm_api_key: Optional[str] = rag_llm_api_key
         self._rag_llm_model: Optional[str] = rag_llm_model
         self._rag_llm_base_url: Optional[str] = rag_llm_base_url
+
+        # Per-workflow RAG pipeline tuning. Lets each agent trade recall
+        # against latency: voice agents typically turn expansion/reranking off
+        # and lower top_n, text agents leave them on.
+        self._rag_query_expansion_enabled: bool = rag_query_expansion_enabled
+        self._rag_reranking_enabled: bool = rag_reranking_enabled
+        self._rag_top_n_chunks: int = rag_top_n_chunks
 
         # Audio configuration (set via set_audio_config from _run_pipeline)
         self._audio_config = None
@@ -443,7 +453,7 @@ class PipecatEngine:
                     query=query,
                     organization_id=organization_id,
                     document_uuids=document_uuids,
-                    limit=20,  # Fetch k=20 candidates; reranker trims to top-5
+                    limit=20,  # Fetch k=20 candidates; ranking trims to top_n
                     embeddings_api_key=self._embeddings_api_key,
                     embeddings_model=self._embeddings_model,
                     embeddings_base_url=self._embeddings_base_url,
@@ -457,6 +467,9 @@ class PipecatEngine:
                     llm_model=self._rag_llm_model,
                     llm_base_url=self._rag_llm_base_url,
                     tracing_context=self._get_otel_context(),
+                    query_expansion_enabled=self._rag_query_expansion_enabled,
+                    reranking_enabled=self._rag_reranking_enabled,
+                    top_n_chunks=self._rag_top_n_chunks,
                 )
 
                 await function_call_params.result_callback(result)

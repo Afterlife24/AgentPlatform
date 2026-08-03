@@ -189,6 +189,11 @@ class WorkflowGraph:
             n.id: Node(n.id, n.type, n.data) for n in dto.nodes
         }
 
+        # Per-workflow RAG pipeline tuning (query expansion, reranking, top_n).
+        # Defaults are applied by RagSettingsDTO when absent from the JSON, so
+        # existing workflows keep the previous behaviour.
+        self.rag_settings = getattr(dto, "rag_settings", None)
+
         # Store all edges
         self.edges: List[Edge] = []
 

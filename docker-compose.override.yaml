@@ -112,7 +112,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 3g
+          memory: 4g
     environment:
       NEXT_PUBLIC_BACKEND_URL: "${NEXT_PUBLIC_BACKEND_URL:-http://localhost:3000}"
 

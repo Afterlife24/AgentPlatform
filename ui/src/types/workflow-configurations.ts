@@ -81,6 +81,18 @@ export interface ModelOverrides {
     is_realtime?: boolean;
 }
 
+export interface RagSettings {
+    query_expansion_enabled: boolean;
+    reranking_enabled: boolean;
+    top_n_chunks: number;
+}
+
+export const DEFAULT_RAG_SETTINGS: RagSettings = {
+    query_expansion_enabled: true,
+    reranking_enabled: true,
+    top_n_chunks: 12,
+};
+
 export interface WorkflowConfigurations {
     ambient_noise_configuration: AmbientNoiseConfiguration;
     max_call_duration: number;  // Maximum call duration in seconds
@@ -93,6 +105,7 @@ export interface WorkflowConfigurations {
     dictionary?: string;  // Comma-separated words for voice agent to listen for
     voicemail_detection?: VoicemailDetectionConfiguration;
     context_compaction_enabled?: boolean;  // Summarize context on node transitions to remove stale tool calls
+    rag_settings?: RagSettings;  // Per-agent RAG pipeline tuning (expansion, reranking, top-N)
     model_overrides?: ModelOverrides;  // Per-workflow model configuration overrides
     model_configuration_v2_override?: OrganizationAiModelConfigurationV2;  // Full v2 model configuration override
     [key: string]: unknown;  // Allow additional properties for future configurations
