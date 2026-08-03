@@ -33,7 +33,7 @@ export function GitHubStarBadge({ className, label, showCount, source }: GitHubS
 
   return (
     <a
-      href="https://github.com/dograh-hq/dograh"
+      href="https://github.com/Afterlife24/AgentPlatform"
       target="_blank"
       rel="noopener noreferrer"
       onClick={() => posthog.capture(PostHogEvent.GITHUB_STAR_CLICKED, { source })}

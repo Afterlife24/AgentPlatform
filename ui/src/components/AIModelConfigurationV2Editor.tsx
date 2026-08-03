@@ -313,7 +313,7 @@ export function AIModelConfigurationV2Editor({
                 || dograh.speed > dograhSpeedRange.max
             ) {
                 throw new Error(
-                    `Dograh speed must be between ${dograhSpeedRange.min} and ${dograhSpeedRange.max}.`,
+                    `Afterlife speed must be between ${dograhSpeedRange.min} and ${dograhSpeedRange.max}.`,
                 );
             }
             await onSave({
@@ -375,7 +375,7 @@ export function AIModelConfigurationV2Editor({
             <Tabs value={mode} onValueChange={(value) => setMode(value as ModelMode)} className="space-y-6">
                 <TabsList className="grid w-full grid-cols-3">
                     <TabsTrigger value="realtime">Speech to Speech</TabsTrigger>
-                    <TabsTrigger value="dograh">Dograh</TabsTrigger>
+                    <TabsTrigger value="dograh">Afterlife</TabsTrigger>
                     <TabsTrigger value="byok">BYOK</TabsTrigger>
                 </TabsList>
 
