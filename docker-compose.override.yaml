@@ -132,16 +132,36 @@ services:
     environment:
       # Inside Docker, the Dograh API is reachable at http://api:8000
       DOGRAH_API_BASE: "http://api:8000/api/v1"
-      DOGRAH_API_KEY: "${WHATSAPP_DOGRAH_API_KEY}"
-      DOGRAH_TRIGGER_PATH: "${WHATSAPP_DOGRAH_TRIGGER_PATH}"
       TWILIO_ACCOUNT_SID: "${TWILIO_ACCOUNT_SID}"
       TWILIO_AUTH_TOKEN: "${TWILIO_AUTH_TOKEN}"
       TWILIO_WHATSAPP_NUMBER: "${TWILIO_WHATSAPP_NUMBER}"
       MONGODB_URL: "${WHATSAPP_MONGODB_URL}"
       MONGODB_DATABASE: "${WHATSAPP_MONGODB_DATABASE}"
+      # AGENT_MAPPINGS used only for one-time migration to MongoDB on first deploy.
+      # After migration, all agent config is managed via the dashboard.
       AGENT_MAPPINGS: "${WHATSAPP_AGENT_MAPPINGS:-}"
+    ports:
+      # Expose adapter directly so the dashboard (browser) can reach it
+      - "8001:8080"
     depends_on:
       api:
         condition: service_healthy
+    networks:
+      - app-network
+
+  # WhatsApp dashboard — Next.js UI for managing agents, conversations, leads
+  whatsapp-dashboard:
+    build:
+      context: ../Whatsapp_Adapter/dashboard
+      dockerfile: Dockerfile
+    container_name: whatsapp_dashboard
+    restart: unless-stopped
+    environment:
+      # Browser calls the adapter on the host-exposed port
+      NEXT_PUBLIC_ADAPTER_URL: "${WHATSAPP_DASHBOARD_ADAPTER_URL:-http://localhost:8001}"
+    ports:
+      - "3001:3001"
+    depends_on:
+      - whatsapp-adapter
     networks:
       - app-network
