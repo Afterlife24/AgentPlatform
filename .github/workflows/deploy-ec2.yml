@@ -4,45 +4,53 @@ name: Deploy to EC2
 # via a merged PR (i.e. a push to the branch itself, not every commit inside
 # an open PR). develop -> devagents.autonomiq.ae, main -> mainagents.autonomiq.ae.
 #
+# Also triggers when the WhatsApp Adapter repo dispatches an event (always
+# deploys to the develop runner in that case).
+#
 # Runs on a self-hosted runner installed directly on each target EC2 instance
 # (see /home/ubuntu/actions-runner on each box). The runner polls GitHub
-# outbound, so no inbound SSH access from GitHub's IP ranges is needed - the
-# security group's "SSH from My IP only" rule stays untouched.
-#
-# Runs synchronously: the job blocks until `docker compose --build` finishes
-# (ui rebuild can take several minutes), so pass/fail is visible in the
-# Actions tab before the workflow completes.
+# outbound, so no inbound SSH access from GitHub's IP ranges is needed.
 
 on:
   push:
     branches:
       - develop
       - main
+  repository_dispatch:
+    types: [whatsapp-adapter-updated]
 
 concurrency:
-  group: deploy-${{ github.ref_name }}
+  group: deploy-${{ github.event_name == 'repository_dispatch' && 'develop' || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   deploy:
-    runs-on: [self-hosted, "${{ github.ref_name }}"]
+    runs-on: [self-hosted, "${{ github.event_name == 'repository_dispatch' && 'develop' || github.ref_name }}"]
     steps:
       - name: Sync repo and redeploy
         run: |
           set -euo pipefail
+
+          DEPLOY_BRANCH="${{ github.event_name == 'repository_dispatch' && 'develop' || github.ref_name }}"
+
           cd /home/ubuntu/dograh
           git fetch origin
-          git checkout ${{ github.ref_name }}
-          git reset --hard origin/${{ github.ref_name }}
+          git checkout "$DEPLOY_BRANCH"
+          git reset --hard "origin/$DEPLOY_BRANCH"
+
+          # Also pull latest WhatsApp Adapter code (sibling repo)
+          if [ -d /home/ubuntu/Whatsapp_Adapter ]; then
+            cd /home/ubuntu/Whatsapp_Adapter
+            git fetch origin
+            git reset --hard origin/main
+          fi
+
+          cd /home/ubuntu/dograh
           sudo docker compose --profile remote up -d --build
 
-          # nginx resolves upstream container hostnames (api, ui, etc.) to their
-          # Docker-network IPs once at startup and caches them. `up -d --build`
-          # above recreates those containers with new IPs whenever their image
-          # changes, so nginx is left pointing at dead IPs until it's restarted.
-          # Without this, every deploy that touches api/ui leaves the site
-          # returning 502s on all /api/v1/* routes until someone notices and
-          # manually restarts nginx.
+          # nginx resolves upstream container hostnames to Docker-network IPs at
+          # startup and caches them. Rebuilt containers get new IPs, so nginx must
+          # be restarted to avoid 502s.
           sudo docker compose --profile remote restart nginx
 
-          echo "Deployed $(git rev-parse --short HEAD) on ${{ github.ref_name }}"
+          echo "Deployed $(git rev-parse --short HEAD) on $DEPLOY_BRANCH"
