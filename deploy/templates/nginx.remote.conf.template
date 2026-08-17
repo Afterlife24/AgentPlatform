@@ -107,6 +107,27 @@ server {
         proxy_set_header X-Forwarded-Proto https;
     }
 
+    location /leads {
+        proxy_pass http://whatsapp_adapter;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location /agents {
+        proxy_pass http://whatsapp_adapter;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location /health {
+        proxy_pass http://whatsapp_adapter;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
     location / {
         proxy_pass         http://ui:3010;
         proxy_http_version 1.1;
