@@ -241,19 +241,9 @@ class KnowledgeBaseClient(BaseDBClient):
         error_message: Optional[str] = None,
         total_chunks: Optional[int] = None,
         docling_metadata: Optional[dict] = None,
+        retrieval_mode: Optional[str] = None,
     ) -> Optional[KnowledgeBaseDocumentModel]:
-        """Update document processing status.
-
-        Args:
-            document_id: ID of the document
-            status: New status (pending, processing, completed, failed)
-            error_message: Optional error message if status is failed
-            total_chunks: Optional total number of chunks
-            docling_metadata: Optional docling metadata
-
-        Returns:
-            Updated KnowledgeBaseDocumentModel
-        """
+        """Update document processing status."""
         async with self.async_session() as session:
             query = select(KnowledgeBaseDocumentModel).where(
                 KnowledgeBaseDocumentModel.id == document_id
@@ -271,6 +261,8 @@ class KnowledgeBaseClient(BaseDBClient):
                 document.total_chunks = total_chunks
             if docling_metadata:
                 document.docling_metadata = docling_metadata
+            if retrieval_mode is not None:
+                document.retrieval_mode = retrieval_mode
 
             await session.commit()
             await session.refresh(document)

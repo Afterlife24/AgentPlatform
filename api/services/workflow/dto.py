@@ -171,6 +171,13 @@ class _ToolDocumentRefsMixin(BaseModel):
         default=None,
         spec_exclude=True,
     )
+    csv_table_uuids: Optional[List[str]] = spec_field(
+        default=None,
+        ui_type=PropertyType.document_refs,
+        display_name="CSV Tables",
+        description="CSV tables this node can query using the query_csv_table tool.",
+        llm_hint="List of CSV table UUIDs from `list_csv_tables`.",
+    )
 
 
 @node_spec(

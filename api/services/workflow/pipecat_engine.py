@@ -59,6 +59,11 @@ from api.services.workflow.tools.knowledge_base_filter import (
 from api.services.workflow.tools.knowledge_base_aggregate import (
     aggregate_knowledge_base,
 )
+from api.services.workflow.tools.csv_table import (
+    aggregate_csv_table,
+    get_column_schema_for_tables,
+    query_csv_table,
+)
 from api.utils.template_renderer import render_template
 
 
@@ -403,7 +408,7 @@ class PipecatEngine:
                 else:
                     # Stale UUID — need the original filename to find replacement.
                     # Query without is_active filter to find the old doc's filename.
-                    stale = await db_client.get_document_by_uuid(uuid)
+                    stale = await db_client.get_document_by_uuid(uuid, org_id)
                     if stale and stale.filename in active_by_filename:
                         fresh = active_by_filename[stale.filename]
                         logger.info(
@@ -422,6 +427,51 @@ class PipecatEngine:
         except Exception as exc:
             logger.warning("KB UUID resolution failed, using originals: {}", exc)
             return document_uuids
+
+    async def _split_document_uuids_by_mode(
+        self, document_uuids: list[str]
+    ) -> tuple[list[str], list[str]]:
+        """Split document UUIDs into RAG docs vs table docs."""
+        from api.db import db_client as _db
+
+        rag_uuids: list[str] = []
+        csv_table_uuids: list[str] = []
+
+        try:
+            org_id = await self._get_organization_id()
+
+            for doc_uuid in document_uuids:
+                # Use raw query to avoid org_id requirement issues
+                rows = await _db.execute_raw_query(
+                    "SELECT retrieval_mode, docling_metadata FROM knowledge_base_documents "
+                    "WHERE document_uuid = :uuid",
+                    {"uuid": doc_uuid}
+                )
+                if not rows:
+                    rag_uuids.append(doc_uuid)
+                    continue
+
+                doc = rows[0]
+                if doc["retrieval_mode"] == "table":
+                    meta = doc["docling_metadata"] or {}
+                    table_uuid = meta.get("table_uuid")
+                    if table_uuid:
+                        csv_table_uuids.append(table_uuid)
+                        logger.debug(
+                            f"Document {doc_uuid[:8]} is a table → csv_table_uuid={table_uuid[:8]}"
+                        )
+                    else:
+                        logger.warning(
+                            f"Document {doc_uuid[:8]} has retrieval_mode=table but no table_uuid in metadata"
+                        )
+                else:
+                    rag_uuids.append(doc_uuid)
+
+        except Exception as exc:
+            logger.warning(f"Failed to split document UUIDs by mode: {exc}")
+            return document_uuids, []
+
+        return rag_uuids, csv_table_uuids
 
     async def _register_knowledge_base_function(
         self, document_uuids: list[str]
@@ -585,6 +635,95 @@ class PipecatEngine:
         self.llm.register_function(
             "aggregate_knowledge_base", aggregate_kb_func)
 
+    async def _register_csv_query_function(
+        self, table_uuids: list[str]
+    ) -> None:
+        """Register query_csv_table function with the LLM.
+
+        Filters CSV table rows by exact match or comparison operators.
+        Activated when a node has csv_table_uuids set.
+        """
+        logger.debug(
+            f"Registering csv query function with {len(table_uuids)} table(s)"
+        )
+
+        async def csv_query_func(function_call_params: FunctionCallParams) -> None:
+            logger.info("LLM Function Call EXECUTED: query_csv_table")
+            logger.info(f"Arguments: {function_call_params.arguments}")
+            try:
+                args = function_call_params.arguments
+                organization_id = await self._get_organization_id()
+                if not organization_id:
+                    raise ValueError("Organization ID not available for CSV table query")
+
+                # Accept both {"query": "..."} and legacy structured args
+                # If LLM passes structured args, convert to natural language query
+                query = args.get("query", "")
+                if not query:
+                    # Build query from any other args the LLM passed
+                    parts = []
+                    for k, v in args.items():
+                        if k not in ("limit", "columns", "column_names"):
+                            parts.append(f"{k}={v}")
+                    if parts:
+                        query = " ".join(parts)
+                    else:
+                        query = "show all data"
+
+                result = await query_csv_table(
+                    organization_id=organization_id,
+                    table_uuids=table_uuids,
+                    query=query,
+                    limit=args.get("limit", 20),
+                    llm_api_key=self._rag_llm_api_key,
+                    llm_model=self._rag_llm_model,
+                    llm_base_url=self._rag_llm_base_url,
+                )
+                await function_call_params.result_callback(result)
+            except Exception as e:
+                logger.error(f"CSV table query failed: {e}")
+                await function_call_params.result_callback(
+                    {"error": str(e), "rows": [], "total_results": 0, "columns": []}
+                )
+
+        self.llm.register_function("query_csv_table", csv_query_func)
+
+    async def _register_csv_aggregate_function(
+        self, table_uuids: list[str]
+    ) -> None:
+        """Register aggregate_csv_table function with the LLM."""
+        logger.debug(
+            f"Registering csv aggregate function with {len(table_uuids)} table(s)"
+        )
+
+        async def csv_agg_func(function_call_params: FunctionCallParams) -> None:
+            logger.info("LLM Function Call EXECUTED: aggregate_csv_table")
+            logger.info(f"Arguments: {function_call_params.arguments}")
+            try:
+                args = function_call_params.arguments
+                organization_id = await self._get_organization_id()
+                if not organization_id:
+                    raise ValueError("Organization ID not available for CSV table aggregation")
+
+                result = await aggregate_csv_table(
+                    organization_id=organization_id,
+                    table_uuids=table_uuids,
+                    aggregate_function=args.get("aggregate_function", "count"),
+                    aggregate_field=args.get("aggregate_field"),
+                    group_by=args.get("group_by"),
+                    filters=args.get("filters"),
+                    order_by=args.get("order_by", "desc"),
+                    limit=args.get("limit", 20),
+                )
+                await function_call_params.result_callback(result)
+            except Exception as e:
+                logger.error(f"CSV table aggregation failed: {e}")
+                await function_call_params.result_callback(
+                    {"error": str(e), "results": []}
+                )
+
+        self.llm.register_function("aggregate_csv_table", csv_agg_func)
+
     async def _perform_variable_extraction_if_needed(
         self, node: Optional[Node], run_in_background: bool = True
     ) -> None:
@@ -726,9 +865,38 @@ class PipecatEngine:
             # filename. This means teammates never have to manually update UUIDs
             # after re-uploading knowledge base files.
             resolved_uuids = await self._resolve_document_uuids(node.document_uuids)
-            await self._register_knowledge_base_function(resolved_uuids)
-            await self._register_knowledge_base_filter_function(resolved_uuids)
-            await self._register_knowledge_base_aggregate_function(resolved_uuids)
+
+            # Separate table-mode documents from regular KB documents
+            rag_uuids, table_uuids_from_docs = await self._split_document_uuids_by_mode(resolved_uuids)
+
+            if rag_uuids:
+                await self._register_knowledge_base_function(rag_uuids)
+                await self._register_knowledge_base_filter_function(rag_uuids)
+                await self._register_knowledge_base_aggregate_function(rag_uuids)
+
+            if table_uuids_from_docs:
+                await self._register_csv_query_function(table_uuids_from_docs)
+                await self._register_csv_aggregate_function(table_uuids_from_docs)
+
+        # Register CSV table query/aggregate handlers if node has csv_table_uuids
+        # csv_table_uuids may contain either:
+        #   a) csv_tables.table_uuid (direct path)
+        #   b) knowledge_base_documents.document_uuid (when attached via CSV Tables UI section)
+        # Auto-heal stale UUIDs (same as document_uuids path) then resolve to
+        # actual csv_tables.table_uuid via docling_metadata.
+        if node.csv_table_uuids:
+            # Step 1: auto-heal stale document UUIDs
+            healed_uuids = await self._resolve_document_uuids(node.csv_table_uuids)
+            # Step 2: resolve document_uuid → csv_tables.table_uuid via docling_metadata
+            _, resolved_csv_uuids = await self._split_document_uuids_by_mode(healed_uuids)
+            # If resolution found table UUIDs via docling_metadata, use those.
+            # Otherwise fall back to using the healed UUIDs directly.
+            effective_csv_uuids = resolved_csv_uuids if resolved_csv_uuids else healed_uuids
+            logger.info(
+                f"CSV table UUIDs resolved: {node.csv_table_uuids} → {effective_csv_uuids}"
+            )
+            await self._register_csv_query_function(effective_csv_uuids)
+            await self._register_csv_aggregate_function(effective_csv_uuids)
 
         # Compose prompt and functions via the context composer module
         system_prompt = compose_system_prompt_for_node(

@@ -20,6 +20,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base, relationship
 
 from api.constants import DEFAULT_CAMPAIGN_RETRY_CONFIG
@@ -1231,7 +1232,8 @@ class KnowledgeBaseDocumentModel(Base):
     file_hash = Column(String(64), nullable=True)  # SHA-256 hash for deduplication
     mime_type = Column(String(100), nullable=True)
 
-    # Retrieval mode: "chunked" (vector search) or "full_document" (return full text)
+    # Retrieval mode: "chunked" (vector search), "full_document" (return full text),
+    # or "table" (CSV rows stored in csv_table_rows, queried via SQL tool)
     retrieval_mode = Column(
         String(20), nullable=False, default="chunked", server_default="chunked"
     )
@@ -1503,4 +1505,105 @@ class RAGRetrievalLogModel(Base):
         Index("ix_rag_logs_workflow_run_id", "workflow_run_id"),
         Index("ix_rag_logs_route", "route"),
         Index("ix_rag_logs_created_at", "created_at"),
+    )
+
+# ---------------------------------------------------------------------------
+# CSV Table models (text-to-SQL tool — counterpart to RAG knowledge base)
+# ---------------------------------------------------------------------------
+
+
+class CsvTableModel(Base):
+    """Metadata for an uploaded CSV file.
+
+    Each record represents one CSV that has been parsed and whose rows are
+    stored in CsvTableRowModel. The table_uuid is the public identifier used
+    in workflow node csv_table_uuids lists — exactly like document_uuid is
+    used for knowledge base documents.
+    """
+
+    __tablename__ = "csv_tables"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Public identifier for API / workflow references
+    table_uuid = Column(
+        String(36),
+        unique=True,
+        nullable=False,
+        index=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+
+    # Organization scoping
+    organization_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+
+    name = Column(String(500), nullable=False)  # original filename or user label
+    row_count = Column(Integer, nullable=False, default=0)
+
+    # JSON array of {"name": "Brand", "type": "text"} — one entry per column
+    column_schema = Column(JSON, nullable=False, default=list)
+
+    # Processing lifecycle — same status values as KB documents
+    processing_status = Column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    processing_error = Column(Text, nullable=True)
+
+    # Audit
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    # Relationships
+    organization = relationship("OrganizationModel")
+    created_by_user = relationship("UserModel")
+    rows = relationship(
+        "CsvTableRowModel",
+        back_populates="table",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("ix_csv_tables_organization_id", "organization_id"),
+        Index("ix_csv_tables_table_uuid", "table_uuid"),
+        Index("ix_csv_tables_status", "processing_status"),
+    )
+
+
+class CsvTableRowModel(Base):
+    """One data row from an uploaded CSV file.
+
+    row_data is a JSONB object keyed by column name. All values are
+    stored as their natural Python type (str/float/int/None) after CSV
+    parsing. Queries use PostgreSQL JSONB operators on this column.
+    JSONB is pre-parsed binary — supports GIN indexes for fast key/value
+    lookups unlike plain JSON which requires full sequential scans.
+    """
+
+    __tablename__ = "csv_table_rows"
+
+    id = Column(Integer, primary_key=True, index=True)
+    table_id = Column(
+        Integer, ForeignKey("csv_tables.id", ondelete="CASCADE"), nullable=False
+    )
+    organization_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    row_index = Column(Integer, nullable=False)  # 0-based position in original CSV
+    row_data = Column(JSONB, nullable=False)  # {"Brand": "JLG", "working_height_m": 20.3, ...}
+
+    # Relationships
+    table = relationship("CsvTableModel", back_populates="rows")
+
+    __table_args__ = (
+        Index("ix_csv_table_rows_table_id", "table_id"),
+        Index("ix_csv_table_rows_org_id", "organization_id"),
     )

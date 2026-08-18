@@ -21,7 +21,7 @@ interface DocumentUploadProps {
 }
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
-const ACCEPTED_FILE_TYPES = ['.pdf', '.docx', '.doc', '.txt', '.json'];
+const ACCEPTED_FILE_TYPES = ['.pdf', '.docx', '.doc', '.txt', '.json', '.csv'];
 
 export default function DocumentUpload({ onUploadSuccess }: DocumentUploadProps) {
   const { config } = useAppConfig();
@@ -71,6 +71,11 @@ export default function DocumentUpload({ onUploadSuccess }: DocumentUploadProps)
       return;
     }
     setSelectedFile(file);
+    // Auto-select table mode for CSV files
+    const ext = '.' + file.name.split('.').pop()?.toLowerCase();
+    if (ext === '.csv') {
+      setRetrievalMode('table');
+    }
   };
 
   const clearSelectedFile = () => {
@@ -228,6 +233,25 @@ export default function DocumentUpload({ onUploadSuccess }: DocumentUploadProps)
                 <p className="text-xs text-muted-foreground">
                   The document is split into chunks and the most relevant ones are retrieved.
                   Better for large documents like manuals or policies.
+                </p>
+              </div>
+            </label>
+            <label
+              htmlFor="table"
+              className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
+                retrievalMode === 'table' ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'
+              }`}
+            >
+              <RadioGroupItem value="table" id="table" className="mt-0.5" />
+              <div>
+                <p className="font-medium text-sm">
+                  Table{' '}
+                  <span className="text-xs font-normal text-muted-foreground">(CSV only)</span>
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  The CSV is stored as a queryable data table. The agent can filter, sort, and
+                  aggregate rows using natural language — ideal for equipment specs, product
+                  catalogues, price lists with numeric data.
                 </p>
               </div>
             </label>

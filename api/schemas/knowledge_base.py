@@ -31,7 +31,11 @@ class ProcessDocumentRequestSchema(BaseModel):
     s3_key: str = Field(..., description="S3 key of the uploaded file")
     retrieval_mode: str = Field(
         default="chunked",
-        description="Retrieval mode: 'chunked' for vector search or 'full_document' for full text retrieval",
+        description=(
+            "Retrieval mode: 'chunked' for vector search, "
+            "'full_document' for full text retrieval, "
+            "'table' for CSV table — parses CSV rows into a queryable Postgres table"
+        ),
     )
 
 
