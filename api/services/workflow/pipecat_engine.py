@@ -64,6 +64,10 @@ from api.services.workflow.tools.csv_table import (
     get_column_schema_for_tables,
     query_csv_table,
 )
+from api.services.workflow.tools.csv_sql_executor import (
+    execute_csv_sql,
+    get_csv_sql_tool,
+)
 from api.utils.template_renderer import render_template
 
 
@@ -724,6 +728,51 @@ class PipecatEngine:
 
         self.llm.register_function("aggregate_csv_table", csv_agg_func)
 
+    async def _register_csv_sql_function(
+        self, table_uuids: list[str]
+    ) -> None:
+        """Register execute_csv_sql function with the LLM.
+
+        This tool accepts raw SQL SELECT statements from the LLM. The LLM
+        generates the SQL based on the node prompt (which contains column
+        info and intent-mapping instructions). The tool validates safety
+        and executes the query.
+        """
+        logger.debug(
+            f"Registering csv sql executor with {len(table_uuids)} table(s)"
+        )
+
+        async def csv_sql_func(function_call_params: FunctionCallParams) -> None:
+            logger.info("LLM Function Call EXECUTED: execute_csv_sql")
+            logger.info(f"Arguments: {function_call_params.arguments}")
+            try:
+                args = function_call_params.arguments
+                organization_id = await self._get_organization_id()
+                if not organization_id:
+                    raise ValueError("Organization ID not available for CSV SQL execution")
+
+                sql = args.get("sql", "")
+                if not sql:
+                    await function_call_params.result_callback(
+                        {"error": "No SQL provided.", "rows": [], "total_results": 0, "columns": []}
+                    )
+                    return
+
+                result = await execute_csv_sql(
+                    organization_id=organization_id,
+                    table_uuids=table_uuids,
+                    sql=sql,
+                    limit=args.get("limit", 20),
+                )
+                await function_call_params.result_callback(result)
+            except Exception as e:
+                logger.error(f"CSV SQL execution failed: {e}")
+                await function_call_params.result_callback(
+                    {"error": str(e), "rows": [], "total_results": 0, "columns": []}
+                )
+
+        self.llm.register_function("execute_csv_sql", csv_sql_func)
+
     async def _perform_variable_extraction_if_needed(
         self, node: Optional[Node], run_in_background: bool = True
     ) -> None:
@@ -877,6 +926,7 @@ class PipecatEngine:
             if table_uuids_from_docs:
                 await self._register_csv_query_function(table_uuids_from_docs)
                 await self._register_csv_aggregate_function(table_uuids_from_docs)
+                await self._register_csv_sql_function(table_uuids_from_docs)
 
         # Register CSV table query/aggregate handlers if node has csv_table_uuids
         # csv_table_uuids may contain either:
@@ -897,6 +947,7 @@ class PipecatEngine:
             )
             await self._register_csv_query_function(effective_csv_uuids)
             await self._register_csv_aggregate_function(effective_csv_uuids)
+            await self._register_csv_sql_function(effective_csv_uuids)
 
         # Compose prompt and functions via the context composer module
         system_prompt = compose_system_prompt_for_node(

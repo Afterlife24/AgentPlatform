@@ -19,6 +19,7 @@ from api.services.workflow.tools.csv_table import (
     get_csv_aggregate_tool,
     get_csv_query_tool,
 )
+from api.services.workflow.tools.csv_sql_executor import get_csv_sql_tool
 from api.db import db_client
 
 # ---------------------------------------------------------------------------
@@ -209,6 +210,13 @@ async def compose_functions_for_node(
                 properties=csv_a_def["function"]["parameters"].get("properties", {}),
                 required=csv_a_def["function"]["parameters"].get("required", []),
             ))
+            csv_sql_def = get_csv_sql_tool(csv_table_uuids_from_docs, col_schema_from_docs)
+            functions.append(get_function_schema(
+                csv_sql_def["function"]["name"],
+                csv_sql_def["function"]["description"],
+                properties=csv_sql_def["function"]["parameters"].get("properties", {}),
+                required=csv_sql_def["function"]["parameters"].get("required", []),
+            ))
 
     # CSV table query + aggregate tools — resolve document UUIDs to csv table UUIDs
     if node.csv_table_uuids:
@@ -266,6 +274,15 @@ async def compose_functions_for_node(
             required=csv_agg_def["function"]["parameters"].get("required", []),
         )
         functions.append(csv_agg_schema)
+
+        csv_sql_def = get_csv_sql_tool(effective_uuids, col_schema)
+        csv_sql_schema = get_function_schema(
+            csv_sql_def["function"]["name"],
+            csv_sql_def["function"]["description"],
+            properties=csv_sql_def["function"]["parameters"].get("properties", {}),
+            required=csv_sql_def["function"]["parameters"].get("required", []),
+        )
+        functions.append(csv_sql_schema)
 
     # Custom tools
     if node.tool_uuids and custom_tool_manager:
