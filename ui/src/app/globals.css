@@ -90,40 +90,39 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
+  --background: oklch(0.15 0.04 255);
+  --foreground: oklch(0.95 0.01 240);
+  --card: oklch(0.20 0.04 255);
+  --card-foreground: oklch(0.95 0.01 240);
+  --popover: oklch(0.20 0.04 255);
+  --popover-foreground: oklch(0.95 0.01 240);
+  --primary: oklch(0.65 0.18 245);
+  --primary-foreground: oklch(0.98 0 0);
+  --secondary: oklch(0.26 0.05 255);
+  --secondary-foreground: oklch(0.95 0.01 240);
+  --muted: oklch(0.26 0.05 255);
+  --muted-foreground: oklch(0.65 0.04 240);
+  --accent: oklch(0.26 0.05 255);
+  --accent-foreground: oklch(0.95 0.01 240);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --ring: oklch(0.55 0.12 255);
+  --chart-1: oklch(0.55 0.22 255);
+  --chart-2: oklch(0.65 0.17 200);
+  --chart-3: oklch(0.75 0.16 280);
+  --chart-4: oklch(0.62 0.22 310);
+  --chart-5: oklch(0.65 0.20 30);
+  --sidebar: oklch(0.18 0.05 255);
+  --sidebar-foreground: oklch(0.95 0.01 240);
+  --sidebar-primary: oklch(0.55 0.20 255);
+  --sidebar-primary-foreground: oklch(0.98 0 0);
+  --sidebar-accent: oklch(0.24 0.05 255);
+  --sidebar-accent-foreground: oklch(0.95 0.01 240);
   --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
-  /* Warm accent, slightly brighter against the near-black surfaces. */
-  --cta: oklch(0.78 0.16 67);
-  --cta-foreground: oklch(0.16 0.02 60);
+  --sidebar-ring: oklch(0.55 0.12 255);
+  --cta: oklch(0.60 0.20 255);
+  --cta-foreground: oklch(0.98 0 0);
   --brand-imprint: url("/brand-imprint-dark.svg");
 }
 
@@ -191,40 +190,21 @@
     .auth-waveform span { animation: none; }
   }
 
-  /* Matte app background — flat charcoal (dark) / soft paper (light), NO
-     gradients, with one subtle graphic in BOTH themes: the giant faded
-     "dograh" wordmark (--brand-imprint, defined in :root/.dark) pinned to
-     the bottom of the viewport, echoing the dograh.com footer. */
-  /* NOTE: background-attachment: fixed positions in VIEWPORT space but only
-     paints inside .app-surface, which starts right of the ~270px sidebar —
-     the +135px x-shift recentres the wordmark on the VISIBLE canvas. */
+  /* App surface — clean flat background, no watermark */
   .app-surface {
     background-color: oklch(0.984 0.001 80);
-    background-image: var(--brand-imprint);
-    background-size: min(68vw, 980px) auto;
-    background-position: calc(50% + 135px) calc(100% - 24px);
-    background-repeat: no-repeat;
-    background-attachment: fixed;
   }
-  /* Sidebar is offcanvas on small screens — true centre there. */
   @media (max-width: 767px) {
     .app-surface {
       background-position: center calc(100% - 24px);
     }
   }
   .dark .app-surface {
-    background-color: oklch(0.165 0.002 80);
+    background-color: oklch(0.15 0.04 255);
   }
 
-  /* Giant faded "dograh" imprint for the auth pages (applied to the AuthShell
-     form column, shared by Stack + OSS login/signup). Same --brand-imprint as
-     .app-surface; element-relative here (no fixed attachment), so it centers
-     and scales to whatever element carries the class. */
+  /* Auth page — no watermark */
   .auth-imprint {
-    background-image: var(--brand-imprint);
-    background-size: min(86%, 920px) auto;
-    background-position: center calc(100% - 32px);
-    background-repeat: no-repeat;
   }
 
 }

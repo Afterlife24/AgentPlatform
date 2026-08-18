@@ -6,6 +6,8 @@ import type {
     RecordingResponseSchema,
     ToolResponse,
 } from "@/client/types.gen";
+import { CsvTableSelector } from "@/components/flow/CsvTableSelector";
+import type { CsvTableItem } from "@/components/flow/CsvTableSelector";
 import { DocumentSelector } from "@/components/flow/DocumentSelector";
 import { MentionTextarea } from "@/components/flow/MentionTextarea";
 import { RecordingSelect } from "@/components/flow/TextOrAudioInput";
@@ -25,7 +27,9 @@ import {
 
 export interface RendererContext {
     tools: ToolResponse[];
-    documents: DocumentResponseSchema[];
+    documents: DocumentResponseSchema[];       // non-table docs for KB section
+    allDocuments?: DocumentResponseSchema[];   // all docs including table-mode for CSV section
+    csvTables?: CsvTableItem[];
     recordings: RecordingResponseSchema[];
     /** Per-node MCP function allowlist (sibling of tool_uuids on node data). */
     mcpToolFilters?: Record<string, string[]>;
@@ -104,6 +108,16 @@ export function PropertyInput({ spec, value, onChange, context }: PropertyInputP
                     value={value}
                     onChange={onChange}
                     documents={context.documents}
+                    allDocuments={context.allDocuments}
+                />
+            );
+        case "csv_table_refs":
+            return (
+                <CsvTableRefsWidget
+                    spec={spec}
+                    value={value}
+                    onChange={onChange}
+                    csvTables={context.csvTables ?? []}
                 />
             );
         case "recording_ref":
@@ -446,12 +460,32 @@ function DocumentRefsWidget({
     value,
     onChange,
     documents,
-}: WidgetProps & { documents: DocumentResponseSchema[] }) {
+    allDocuments,
+}: WidgetProps & { documents: DocumentResponseSchema[]; allDocuments?: DocumentResponseSchema[] }) {
+    const isCsvTable = spec.display_name === "CSV Tables";
     return (
         <DocumentSelector
             value={(value as string[] | undefined) ?? []}
             onChange={onChange}
-            documents={documents}
+            documents={isCsvTable ? (allDocuments ?? documents) : documents}
+            label={spec.display_name}
+            description={spec.description}
+            filterMode={isCsvTable ? "table" : undefined}
+        />
+    );
+}
+
+function CsvTableRefsWidget({
+    spec,
+    value,
+    onChange,
+    csvTables,
+}: WidgetProps & { csvTables: CsvTableItem[] }) {
+    return (
+        <CsvTableSelector
+            value={(value as string[] | undefined) ?? []}
+            onChange={onChange}
+            csvTables={csvTables}
             label={spec.display_name}
             description={spec.description}
         />

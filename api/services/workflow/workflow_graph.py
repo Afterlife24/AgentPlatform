@@ -90,6 +90,7 @@ class Node:
         self.tool_uuids = getattr(data, "tool_uuids", None)
         self.document_uuids = getattr(data, "document_uuids", None)
         self.mcp_tool_filters = getattr(data, "mcp_tool_filters", None)
+        self.csv_table_uuids = getattr(data, "csv_table_uuids", None)
         self.pre_call_fetch_enabled = getattr(data, "pre_call_fetch_enabled", False)
         self.pre_call_fetch_url = getattr(data, "pre_call_fetch_url", None)
         self.pre_call_fetch_credential_uuid = getattr(
@@ -188,6 +189,11 @@ class WorkflowGraph:
         self.nodes: Dict[str, Node] = {
             n.id: Node(n.id, n.type, n.data) for n in dto.nodes
         }
+
+        # Per-workflow RAG pipeline tuning (query expansion, reranking, top_n).
+        # Defaults are applied by RagSettingsDTO when absent from the JSON, so
+        # existing workflows keep the previous behaviour.
+        self.rag_settings = getattr(dto, "rag_settings", None)
 
         # Store all edges
         self.edges: List[Edge] = []

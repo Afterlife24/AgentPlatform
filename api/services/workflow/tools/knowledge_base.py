@@ -49,6 +49,9 @@ async def retrieve_from_knowledge_base(
     llm_model: Optional[str] = None,
     llm_base_url: Optional[str] = None,
     tracing_context=None,
+    query_expansion_enabled: bool = True,
+    reranking_enabled: bool = True,
+    top_n_chunks: int = _FINAL_TOP_N,
 ) -> Dict[str, Any]:
     """Retrieve relevant information from the knowledge base.
 
@@ -86,6 +89,9 @@ async def retrieve_from_knowledge_base(
                 embeddings_api_key, embeddings_model, embeddings_base_url,
                 embeddings_provider, embeddings_endpoint, embeddings_api_version,
                 correlation_id, llm_api_key, llm_model, llm_base_url,
+                query_expansion_enabled=query_expansion_enabled,
+                reranking_enabled=reranking_enabled,
+                top_n_chunks=top_n_chunks,
             )
 
         if parent_context:
@@ -107,6 +113,9 @@ async def retrieve_from_knowledge_base(
                         embeddings_api_key, embeddings_model, embeddings_base_url,
                         embeddings_provider, embeddings_endpoint, embeddings_api_version,
                         correlation_id, llm_api_key, llm_model, llm_base_url,
+                        query_expansion_enabled=query_expansion_enabled,
+                        reranking_enabled=reranking_enabled,
+                        top_n_chunks=top_n_chunks,
                     )
 
                     span.set_attribute("retrieval.results_count", result["total_results"])
@@ -151,6 +160,9 @@ async def retrieve_from_knowledge_base(
                 embeddings_api_key, embeddings_model, embeddings_base_url,
                 embeddings_provider, embeddings_endpoint, embeddings_api_version,
                 correlation_id, llm_api_key, llm_model, llm_base_url,
+                query_expansion_enabled=query_expansion_enabled,
+                reranking_enabled=reranking_enabled,
+                top_n_chunks=top_n_chunks,
             )
     else:
         return await _perform_retrieval(
@@ -158,6 +170,9 @@ async def retrieve_from_knowledge_base(
             embeddings_api_key, embeddings_model, embeddings_base_url,
             embeddings_provider, embeddings_endpoint, embeddings_api_version,
             correlation_id, llm_api_key, llm_model, llm_base_url,
+            query_expansion_enabled=query_expansion_enabled,
+            reranking_enabled=reranking_enabled,
+            top_n_chunks=top_n_chunks,
         )
 
 
@@ -177,13 +192,24 @@ async def _perform_retrieval(
     llm_model: Optional[str] = None,
     llm_base_url: Optional[str] = None,
     workflow_run_id: Optional[int] = None,
+    query_expansion_enabled: bool = True,
+    reranking_enabled: bool = True,
+    top_n_chunks: int = _FINAL_TOP_N,
 ) -> Dict[str, Any]:
-    """Full RAG pipeline:
-      router → query expansion → hybrid search × N → RRF merge → rerank → top-5
+    """Full RAG pipeline with per-step latency logging.
 
-    Falls back gracefully at every step — if expansion fails, uses original
-    query; if reranking fails, uses RRF order; if BM25 fails, uses dense only.
+    Each step's wall-clock time is recorded and logged as a single structured
+    line at the end so you can grep for "RAG LATENCY" and see exactly where
+    time is spent across router / expansion / embedding / search / rerank.
     """
+    import time as _time
+
+    t_total_start = _time.perf_counter()
+    _lat: Dict[str, float] = {}   # step → ms
+
+    def _ms(start: float) -> float:
+        return round((_time.perf_counter() - start) * 1000, 1)
+
     try:
         chunks: List[Dict[str, Any]] = []
 
@@ -222,12 +248,14 @@ async def _perform_retrieval(
         # ------------------------------------------------------------------
         # 1. Deterministic router
         # ------------------------------------------------------------------
+        t0 = _time.perf_counter()
         rag_route = await route_query(
             query=query,
             llm_api_key=llm_api_key,
             llm_model=llm_model,
             llm_base_url=llm_base_url,
         )
+        _lat["router_ms"] = _ms(t0)
         logger.info("RAG route for query '{}': {}", query[:60], rag_route)
 
         # Out-of-scope — return empty immediately, no retrieval needed
@@ -243,7 +271,8 @@ async def _perform_retrieval(
         # ------------------------------------------------------------------
         # 2. Query expansion (semantic route only — filters don't benefit)
         # ------------------------------------------------------------------
-        if rag_route == RAGRoute.SEMANTIC:
+        t0 = _time.perf_counter()
+        if rag_route == RAGRoute.SEMANTIC and query_expansion_enabled:
             queries = await expand_query(
                 query=query,
                 llm_api_key=llm_api_key,
@@ -252,10 +281,14 @@ async def _perform_retrieval(
             )
         else:
             queries = [query]
+            if rag_route == RAGRoute.SEMANTIC:
+                logger.debug("Query expansion disabled for this workflow")
+        _lat["expansion_ms"] = _ms(t0)
 
         # ------------------------------------------------------------------
-        # 3. Build embedding service (shared across all query variants)
+        # 3. Build embedding service
         # ------------------------------------------------------------------
+        t0 = _time.perf_counter()
         embedding_service = await build_embedding_service(
             db_client=db_client,
             provider=embeddings_provider,
@@ -266,11 +299,12 @@ async def _perform_retrieval(
             api_version=embeddings_api_version,
             correlation_id=correlation_id,
         )
+        _lat["embed_init_ms"] = _ms(t0)
 
         # ------------------------------------------------------------------
         # 4. Hybrid search × N query variants in parallel
         # ------------------------------------------------------------------
-        fetch_k = limit  # limit=20 passed from pipecat_engine
+        fetch_k = limit
 
         async def _hybrid_for_query(q: str) -> List[dict]:
             try:
@@ -285,7 +319,6 @@ async def _perform_retrieval(
                 )
             except Exception as exc:
                 logger.warning("Hybrid search failed for variant '{}': {}", q[:40], exc)
-                # Fallback to dense-only for this variant
                 try:
                     q_embedding = await embedding_service.embed_query(q)
                     return await db_client.search_similar_chunks(
@@ -299,11 +332,14 @@ async def _perform_retrieval(
                     logger.error("Dense fallback also failed for '{}': {}", q[:40], exc2)
                     return []
 
+        t0 = _time.perf_counter()
         per_query_results = await asyncio.gather(*[_hybrid_for_query(q) for q in queries])
+        _lat["search_ms"] = _ms(t0)
 
         # ------------------------------------------------------------------
-        # 5. Cross-query RRF merge (deduplicate across all query variants)
+        # 5. Cross-query RRF merge
         # ------------------------------------------------------------------
+        t0 = _time.perf_counter()
         rrf_k = 60
         rrf_scores: Dict[int, float] = {}
         chunk_data: Dict[int, dict] = {}
@@ -317,13 +353,13 @@ async def _perform_retrieval(
                 if cid not in chunk_data:
                     chunk_data[cid] = row
 
-        # Sort by descending RRF score
         sorted_ids = sorted(rrf_scores, key=lambda c: rrf_scores[c], reverse=True)
         merged_candidates = []
         for cid in sorted_ids[:fetch_k]:
             entry = dict(chunk_data[cid])
             entry["rrf_score"] = round(rrf_scores[cid], 6)
             merged_candidates.append(entry)
+        _lat["rrf_ms"] = _ms(t0)
 
         logger.info(
             "Cross-query RRF: {} variants × {} results → {} unique candidates",
@@ -333,32 +369,39 @@ async def _perform_retrieval(
         )
 
         # ------------------------------------------------------------------
-        # 6. LLM reranker — trim to _FINAL_TOP_N
+        # 6. LLM reranker
         # ------------------------------------------------------------------
         # Normalise to the shape the reranker expects
         for c in merged_candidates:
             if "text" not in c:
                 c["text"] = c.get("contextualized_text") or c.get("chunk_text") or ""
 
-        reranker = build_reranking_service(
-            api_key=llm_api_key,
-            model=llm_model,
-            base_url=llm_base_url,
+        reranker = (
+            build_reranking_service(
+                api_key=llm_api_key,
+                model=llm_model,
+                base_url=llm_base_url,
+            )
+            if reranking_enabled
+            else None
         )
 
+        t0 = _time.perf_counter()
         if reranker:
             try:
                 reranked = await reranker.rerank(
                     query=query,
                     chunks=merged_candidates,
-                    top_n=_FINAL_TOP_N,
+                    top_n=top_n_chunks,
                 )
             except Exception as exc:
                 logger.warning("Reranking failed, using RRF order: {}", exc)
-                reranked = merged_candidates[:_FINAL_TOP_N]
+                reranked = merged_candidates[:top_n_chunks]
         else:
-            # No reranker (Dograh proxy or no key) — use RRF order directly
-            reranked = merged_candidates[:_FINAL_TOP_N]
+            if not reranking_enabled:
+                logger.debug("Reranking disabled for this workflow")
+            reranked = merged_candidates[:top_n_chunks]
+        _lat["rerank_ms"] = _ms(t0)
 
         # ------------------------------------------------------------------
         # 7. Normalise output shape for the LLM
@@ -386,6 +429,27 @@ async def _perform_retrieval(
             "RAG pipeline complete: query='{}', route={}, expanded={}, "
             "candidates={}, final={}",
             query[:60],
+            rag_route.value,
+            len(queries),
+            len(merged_candidates),
+            len(chunks),
+        )
+
+        # ------------------------------------------------------------------
+        # Structured latency breakdown — grep for "RAG LATENCY" to see it
+        # ------------------------------------------------------------------
+        _lat["total_ms"] = _ms(t_total_start)
+        logger.info(
+            "RAG LATENCY | query='{}' | total={}ms | "
+            "router={}ms | expansion={}ms | search={}ms | rrf={}ms | rerank={}ms | "
+            "route={} | variants={} | candidates={} | final={}",
+            query[:50],
+            _lat["total_ms"],
+            _lat.get("router_ms", 0),
+            _lat.get("expansion_ms", 0),
+            _lat.get("search_ms", 0),
+            _lat.get("rrf_ms", 0),
+            _lat.get("rerank_ms", 0),
             rag_route.value,
             len(queries),
             len(merged_candidates),

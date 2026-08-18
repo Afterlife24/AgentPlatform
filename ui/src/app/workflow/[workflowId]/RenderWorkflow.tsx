@@ -12,6 +12,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { createWorkflowDraftApiV1WorkflowWorkflowIdCreateDraftPost, getWorkflowVersionsApiV1WorkflowWorkflowIdVersionsGet, listDocumentsApiV1KnowledgeBaseDocumentsGet, listRecordingsApiV1WorkflowRecordingsGet, listToolsApiV1ToolsGet } from '@/client';
 import type { DocumentResponseSchema, RecordingResponseSchema, ToolResponse } from '@/client/types.gen';
+import type { CsvTableItem } from '@/components/flow/CsvTableSelector';
 import { useNodeSpecs } from "@/components/flow/renderer";
 import { FlowEdge, FlowNode, NodeType } from "@/components/flow/types";
 import { HireExpertNudge } from "@/components/lead-forms/HireExpertNudge";
@@ -93,6 +94,8 @@ function RenderWorkflow({
     const [currentVersionStatus, setCurrentVersionStatus] = useState<string | null>(initialVersionStatus ?? null);
     const versionsFetched = useRef(false);
     const [documents, setDocuments] = useState<DocumentResponseSchema[] | undefined>(undefined);
+    const [allDocuments, setAllDocuments] = useState<DocumentResponseSchema[]>([]);
+    const [csvTables, setCsvTables] = useState<CsvTableItem[]>([]);
     const [tools, setTools] = useState<ToolResponse[] | undefined>(undefined);
     const [recordings, setRecordings] = useState<RecordingResponseSchema[]>([]);
     const [activeRuntimeNodeId, setActiveRuntimeNodeId] = useState<string | null>(null);
@@ -343,7 +346,27 @@ function RenderWorkflow({
                     query: { limit: 100 },
                 });
                 if (documentsResponse.data) {
-                    setDocuments(documentsResponse.data.documents);
+                    const allDocs = documentsResponse.data.documents;
+                    // KB Documents section: non-table docs only
+                    const kbDocs = allDocs.filter((d: { retrieval_mode?: string }) => d.retrieval_mode !== 'table');
+                    setDocuments(kbDocs);
+                    // allDocuments includes table-mode docs so CSV Tables widget can show them
+                    setAllDocuments(allDocs);
+                    // Build CsvTableItem list for display purposes only
+                    const tableDocs = allDocs.filter((d: { retrieval_mode?: string }) => d.retrieval_mode === 'table');
+                    const csvItems = tableDocs.map((d: {
+                        document_uuid: string;
+                        filename: string;
+                        processing_status: string;
+                        docling_metadata?: { row_count?: number; columns?: string[] };
+                    }) => ({
+                        table_uuid: d.document_uuid,
+                        name: d.filename,
+                        row_count: d.docling_metadata?.row_count ?? 0,
+                        column_schema: (d.docling_metadata?.columns ?? []).map((c: string) => ({ name: c, type: 'text' })),
+                        processing_status: d.processing_status,
+                    }));
+                    setCsvTables(csvItems);
                 }
 
                 // Fetch tools
@@ -466,6 +489,8 @@ function RenderWorkflow({
     const workflowContextValue = useMemo(() => ({
         saveWorkflow: guardedSaveWorkflow,
         documents,
+        allDocuments,
+        csvTables,
         tools,
         updateTool,
         recordings,
@@ -473,6 +498,8 @@ function RenderWorkflow({
     }), [
         guardedSaveWorkflow,
         documents,
+        allDocuments,
+        csvTables,
         tools,
         updateTool,
         recordings,

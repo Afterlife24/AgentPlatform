@@ -6,7 +6,9 @@ and DB writes locally.
 """
 
 import json
+import io
 import os
+import re
 import tempfile
 
 from loguru import logger
@@ -167,6 +169,18 @@ async def process_knowledge_base_document(
             file_hash=file_hash,
             mime_type=mime_type,
         )
+
+        # Handle table mode BEFORE calling MPS — CSV files don't need MPS parsing
+        if retrieval_mode == "table":
+            await _process_as_csv_table(
+                document_id=document_id,
+                organization_id=organization_id,
+                created_by=document.created_by,
+                temp_file_path=temp_file_path,
+                filename=filename,
+                db_client=db_client,
+            )
+            return
 
         embeddings_provider = None
         embeddings_api_key = None
@@ -713,3 +727,154 @@ def _map_flat_models_to_chunks(
         f"Enriched {len(enriched)}/{len(mps_chunks)} chunks with flat model metadata"
     )
     return enriched
+
+
+async def _process_as_csv_table(
+    *,
+    document_id: int,
+    organization_id: int,
+    created_by: int,
+    temp_file_path: str,
+    filename: str,
+    db_client,
+) -> None:
+    """Parse a CSV file and store its rows in csv_table_rows.
+
+    Called from process_knowledge_base_document when retrieval_mode="table".
+    Creates a csv_tables record linked to the knowledge_base_document via
+    docling_metadata["table_uuid"], so the workflow engine can find and register
+    the CSV query tools when this document_uuid is attached to a node.
+
+    Args:
+        document_id: The knowledge_base_documents row being processed.
+        organization_id: Tenant ID.
+        created_by: User ID who uploaded the file.
+        temp_file_path: Local path to the downloaded CSV.
+        filename: Original filename.
+        db_client: The unified DB client.
+    """
+    import csv as csv_module
+
+    logger.info(f"Processing CSV as table for document {document_id}: {filename}")
+
+    try:
+        # Read and parse the CSV
+        with open(temp_file_path, "r", encoding="utf-8-sig") as f:
+            reader = csv_module.DictReader(f)
+            if not reader.fieldnames:
+                raise ValueError("CSV has no header row")
+
+            fieldnames = list(reader.fieldnames)
+            rows_raw = list(reader)
+
+        if not rows_raw:
+            raise ValueError("CSV has no data rows")
+
+        # Parse each row — coerce numeric strings to float
+        rows: list[dict] = []
+        for raw_row in rows_raw:
+            parsed: dict = {}
+            for key, val in raw_row.items():
+                if val is None or (isinstance(val, str) and val.strip() in ("", "N/A", "n/a", "-", "NA")):
+                    parsed[key] = None
+                else:
+                    raw_str = str(val).strip()
+                    # Normalize spaces
+                    v = " ".join(raw_str.split())
+                    # Strip parenthetical notes e.g. "4,000 kg (max rated...)" → "4,000 kg"
+                    paren_idx = v.find("(")
+                    if paren_idx > 0:
+                        v = v[:paren_idx].strip()
+
+                    # Split off trailing unit if present
+                    num_part = v
+                    space_m = re.match(r"^(-?[\d.,]+)\s+[a-zA-Z%°/²³]+$", v)
+                    if space_m:
+                        num_part = space_m.group(1)
+
+                    # European decimal: "40,10" = 40.10 (comma before 1-2 digits)
+                    # vs thousands: "6,495" (comma before 3 digits)
+                    euro = re.match(r"^-?\d{1,3},\d{1,2}$", num_part)
+                    if euro:
+                        try:
+                            parsed[key] = float(num_part.replace(",", "."))
+                            continue
+                        except ValueError:
+                            pass
+                    else:
+                        clean = num_part.replace(",", "")
+                        # Pure number
+                        try:
+                            parsed[key] = float(clean)
+                            continue
+                        except ValueError:
+                            pass
+                        # Attached known unit (e.g. "47.72m", "227kg")
+                        _known = {"m","mm","cm","km","ft","in","kg","g","lb","lbs","t","l","ml","gal","kw","hp","kva","psi","bar","hz","rpm"}
+                        att_m = re.match(r"^(-?[\d.]+)([a-zA-Z]{1,4})$", clean)
+                        if att_m and att_m.group(2).lower() in _known:
+                            try:
+                                parsed[key] = float(att_m.group(1))
+                                continue
+                            except ValueError:
+                                pass
+
+                    # Everything else — keep as string
+                    parsed[key] = raw_str
+            rows.append(parsed)
+
+        # Infer column types from data
+        col_schema: list[dict] = []
+        for field in fieldnames:
+            inferred = "text"
+            for r in rows[:20]:
+                if isinstance(r.get(field), float):
+                    inferred = "number"
+                    break
+            col_schema.append({"name": field, "type": inferred})
+
+        # Create the csv_tables record
+        table = await db_client.create_csv_table(
+            organization_id=organization_id,
+            created_by=created_by,
+            name=filename,
+        )
+
+        # Insert all rows
+        await db_client.insert_csv_rows(table.id, organization_id, rows)
+
+        # Update csv_tables status
+        await db_client.update_csv_table_status(
+            table.id,
+            "completed",
+            row_count=len(rows),
+            column_schema=col_schema,
+        )
+
+        # Update the knowledge_base_document status and store table_uuid in
+        # docling_metadata so the pipecat engine can find it by document_uuid
+        await db_client.update_document_status(
+            document_id,
+            "completed",
+            total_chunks=0,
+            retrieval_mode="table",
+            docling_metadata={
+                "table_uuid": table.table_uuid,
+                "row_count": len(rows),
+                "column_count": len(fieldnames),
+                "columns": fieldnames,
+            },
+        )
+
+        logger.info(
+            f"CSV table processed for document {document_id}: "
+            f"table_uuid={table.table_uuid}, "
+            f"{len(rows)} rows, {len(fieldnames)} columns"
+        )
+
+    except Exception as e:
+        logger.exception(f"CSV table processing failed for document {document_id}: {e}")
+        await db_client.update_document_status(
+            document_id, "failed", error_message=str(e)
+        )
+        raise

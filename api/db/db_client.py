@@ -1,4 +1,5 @@
 from api.db.agent_trigger_client import AgentTriggerClient
+from api.db.csv_table_client import CsvTableClient
 from api.db.api_key_client import APIKeyClient
 from api.db.campaign_client import CampaignClient
 from api.db.embed_token_client import EmbedTokenClient
@@ -45,6 +46,7 @@ class DBClient(
     TelephonyConfigurationClient,
     TelephonyPhoneNumberClient,
     FolderClient,
+    CsvTableClient,
 ):
     """
     Unified database client that combines all specialized database operations.

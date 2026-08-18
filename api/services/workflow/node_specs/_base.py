@@ -44,6 +44,7 @@ class PropertyType(str, Enum):
     document_refs = "document_refs"
     recording_ref = "recording_ref"
     credential_ref = "credential_ref"
+    csv_table_refs = "csv_table_refs"  # CSV tables from /api/v1/csv-tables
 
     # Domain-specific input widgets
     mention_textarea = "mention_textarea"  # textarea with {{var}} mentions

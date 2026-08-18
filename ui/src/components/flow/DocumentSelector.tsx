@@ -18,6 +18,8 @@ interface DocumentSelectorProps {
     label?: string;
     description?: string;
     showLabel?: boolean;
+    /** If set, only show documents with this retrieval_mode */
+    filterMode?: string;
 }
 
 export const DocumentSelector = ({
@@ -28,11 +30,15 @@ export const DocumentSelector = ({
     label = "Knowledge Base Documents",
     description = "Select documents that the agent can reference during conversations.",
     showLabel = true,
+    filterMode,
 }: DocumentSelectorProps) => {
-    // Only show completed documents
+    // Only show completed documents, optionally filtered by retrieval_mode
     const completedDocuments = useMemo(
-        () => documents.filter((doc) => doc.processing_status === "completed"),
-        [documents]
+        () => documents.filter((doc) =>
+            doc.processing_status === "completed" &&
+            (filterMode ? doc.retrieval_mode === filterMode : doc.retrieval_mode !== "table")
+        ),
+        [documents, filterMode]
     );
 
     const handleToggle = (documentUuid: string, checked: boolean) => {
@@ -123,7 +129,7 @@ export const DocumentSelector = ({
                                             {doc.filename}
                                         </div>
                                         <div className="text-xs text-muted-foreground">
-                                            {formatFileSize(doc.file_size_bytes)} • {doc.retrieval_mode === 'full_document' ? 'Full Document' : `${doc.total_chunks} chunks`}
+                                            {formatFileSize(doc.file_size_bytes)} • {doc.retrieval_mode === 'full_document' ? 'Full Document' : doc.retrieval_mode === 'table' ? 'Table' : `${doc.total_chunks} chunks`}
                                         </div>
                                     </div>
                                 </label>

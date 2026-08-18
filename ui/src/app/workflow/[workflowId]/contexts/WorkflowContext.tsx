@@ -2,10 +2,13 @@ import { createContext, useContext } from 'react';
 
 import type { DocumentResponseSchema, ToolResponse } from '@/client/types.gen';
 import type { RecordingResponseSchema } from '@/client/types.gen';
+import type { CsvTableItem } from '@/components/flow/CsvTableSelector';
 
 interface WorkflowContextType {
     saveWorkflow: (updateWorkflowDefinition?: boolean) => Promise<void>;
     documents?: DocumentResponseSchema[];
+    allDocuments?: DocumentResponseSchema[];
+    csvTables?: CsvTableItem[];
     tools?: ToolResponse[];
     updateTool?: (
         toolUuid: string,
