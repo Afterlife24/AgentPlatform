@@ -733,6 +733,7 @@ class PipecatEngine:
     ) -> None:
         """Register execute_csv_sql function with the LLM.
 
+<<<<<<< Updated upstream
         This tool accepts raw SQL SELECT statements from the LLM. The LLM
         generates the SQL based on the node prompt (which contains column
         info and intent-mapping instructions). The tool validates safety
@@ -740,6 +741,14 @@ class PipecatEngine:
         """
         logger.debug(
             f"Registering csv sql executor with {len(table_uuids)} table(s)"
+=======
+        The LLM writes raw PostgreSQL SELECT queries against csv_data table.
+        This handler validates safety, scopes to org, and executes.
+        Activated when a node has csv_table_uuids set.
+        """
+        logger.debug(
+            f"Registering execute_csv_sql function with {len(table_uuids)} table(s)"
+>>>>>>> Stashed changes
         )
 
         async def csv_sql_func(function_call_params: FunctionCallParams) -> None:
@@ -747,6 +756,7 @@ class PipecatEngine:
             logger.info(f"Arguments: {function_call_params.arguments}")
             try:
                 args = function_call_params.arguments
+<<<<<<< Updated upstream
                 organization_id = await self._get_organization_id()
                 if not organization_id:
                     raise ValueError("Organization ID not available for CSV SQL execution")
@@ -767,6 +777,23 @@ class PipecatEngine:
                 await function_call_params.result_callback(result)
             except Exception as e:
                 logger.error(f"CSV SQL execution failed: {e}")
+=======
+                sql = args.get("sql", "")
+                organization_id = await self._get_organization_id()
+                if not organization_id:
+                    raise ValueError("Organization ID not available")
+                if not sql:
+                    raise ValueError("No SQL query provided")
+
+                result = await execute_csv_sql(
+                    sql=sql,
+                    organization_id=organization_id,
+                    table_uuids=table_uuids,
+                )
+                await function_call_params.result_callback(result)
+            except Exception as e:
+                logger.error(f"execute_csv_sql failed: {e}")
+>>>>>>> Stashed changes
                 await function_call_params.result_callback(
                     {"error": str(e), "rows": [], "total_results": 0, "columns": []}
                 )
