@@ -275,10 +275,6 @@ async def compose_functions_for_node(
         )
         functions.append(csv_agg_schema)
 
-<<<<<<< Updated upstream
-=======
-        # execute_csv_sql — LLM writes raw SQL, tool executes safely
->>>>>>> Stashed changes
         csv_sql_def = get_csv_sql_tool(effective_uuids, col_schema)
         csv_sql_schema = get_function_schema(
             csv_sql_def["function"]["name"],
