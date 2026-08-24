@@ -74,6 +74,12 @@ services:
     image: dograh-local/dograh-api:local
     pull_policy: never
     restart: unless-stopped
+    environment:
+      # Gmail SMTP for OTP emails (signup verification + forgot password)
+      SMTP_HOST: "${SMTP_HOST:-smtp.gmail.com}"
+      SMTP_PORT: "${SMTP_PORT:-587}"
+      SMTP_FROM_EMAIL: "${SMTP_FROM_EMAIL}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD}"
     # Mount the local startup script and use it as the entrypoint
     # (adds --proxy-headers to uvicorn for Twilio signature validation behind nginx)
     volumes:
@@ -88,6 +94,11 @@ services:
     image: dograh-local/dograh-api:local
     pull_policy: never
     restart: unless-stopped
+    environment:
+      SMTP_HOST: "${SMTP_HOST:-smtp.gmail.com}"
+      SMTP_PORT: "${SMTP_PORT:-587}"
+      SMTP_FROM_EMAIL: "${SMTP_FROM_EMAIL}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD}"
 
   # NEXT_PUBLIC_BACKEND_URL is baked into the Next.js build at build time (it's
   # a NEXT_PUBLIC_ var, inlined into the browser JS bundle) — it can't be
@@ -134,12 +145,8 @@ services:
       DOGRAH_API_BASE: "http://api:8000/api/v1"
       TWILIO_ACCOUNT_SID: "${TWILIO_ACCOUNT_SID}"
       TWILIO_AUTH_TOKEN: "${TWILIO_AUTH_TOKEN}"
-      TWILIO_WHATSAPP_NUMBER: "${TWILIO_WHATSAPP_NUMBER}"
       MONGODB_URL: "${WHATSAPP_MONGODB_URL}"
       MONGODB_DATABASE: "${WHATSAPP_MONGODB_DATABASE}"
-      # AGENT_MAPPINGS used only for one-time migration to MongoDB on first deploy.
-      # After migration, all agent config is managed via the dashboard.
-      AGENT_MAPPINGS: "${WHATSAPP_AGENT_MAPPINGS:-}"
     ports:
       # Expose adapter directly so the dashboard (browser) can reach it
       - "8001:8080"
