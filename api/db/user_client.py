@@ -219,3 +219,139 @@ class UserClient(BaseDBClient):
             await session.commit()
             await session.refresh(user)
             return user
+
+    async def save_otp(self, email: str, otp: str, purpose: str, expires_at: datetime) -> None:
+        """Store an OTP code against a user record (or a pending-registration placeholder).
+
+        For signup the user row may not exist yet — we pre-create a minimal stub
+        (no password_hash) so we have somewhere to park the OTP.  The stub is
+        completed by create_user_with_email once the OTP is verified.
+        """
+        from sqlalchemy import update
+
+        normalized = email.lower()
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(UserModel).where(func.lower(UserModel.email) == normalized)
+            )
+            user = result.scalars().first()
+
+            if user is None:
+                # Create a minimal stub for signup flow
+                user = UserModel(
+                    provider_id=f"pending_{int(datetime.now(timezone.utc).timestamp())}_{uuid.uuid4()}",
+                    email=normalized,
+                )
+                session.add(user)
+                await session.flush()
+
+            stmt = (
+                update(UserModel)
+                .where(UserModel.id == user.id)
+                .values(otp_code=otp, otp_expires_at=expires_at, otp_purpose=purpose)
+            )
+            await session.execute(stmt)
+            await session.commit()
+
+    async def verify_otp(self, email: str, otp: str, purpose: str) -> bool:
+        """Return True if the OTP matches, has the right purpose, and hasn't expired."""
+        from datetime import UTC
+
+        normalized = email.lower()
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(UserModel).where(func.lower(UserModel.email) == normalized)
+            )
+            user = result.scalars().first()
+            if not user:
+                return False
+            if user.otp_code != otp:
+                return False
+            if user.otp_purpose != purpose:
+                return False
+            if not user.otp_expires_at:
+                return False
+            if user.otp_expires_at.replace(tzinfo=UTC) < datetime.now(UTC):
+                return False
+            return True
+
+    async def clear_otp(self, email: str) -> None:
+        """Clear OTP fields after successful use."""
+        from sqlalchemy import update
+
+        normalized = email.lower()
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(UserModel).where(func.lower(UserModel.email) == normalized)
+            )
+            user = result.scalars().first()
+            if user:
+                stmt = (
+                    update(UserModel)
+                    .where(UserModel.id == user.id)
+                    .values(otp_code=None, otp_expires_at=None, otp_purpose=None)
+                )
+                await session.execute(stmt)
+                await session.commit()
+
+    async def set_password(self, email: str, password_hash: str) -> None:
+        """Update the password hash for a user (used after OTP-verified reset)."""
+        from sqlalchemy import update
+
+        normalized = email.lower()
+        async with self.async_session() as session:
+            stmt = (
+                update(UserModel)
+                .where(func.lower(UserModel.email) == normalized)
+                .values(password_hash=password_hash)
+            )
+            await session.execute(stmt)
+            await session.commit()
+
+    async def complete_signup(
+        self, email: str, password_hash: str, name: str | None = None
+    ) -> UserModel:
+        """Finalize a stub user created during OTP send by setting the password hash.
+
+        If no stub exists, creates the user from scratch (fallback).
+        """
+        from sqlalchemy import update
+
+        normalized = email.lower()
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(UserModel).where(func.lower(UserModel.email) == normalized)
+            )
+            user = result.scalars().first()
+
+            if user:
+                # Update the stub
+                new_provider_id = f"oss_{int(datetime.now(timezone.utc).timestamp())}_{uuid.uuid4()}"
+                stmt = (
+                    update(UserModel)
+                    .where(UserModel.id == user.id)
+                    .values(
+                        password_hash=password_hash,
+                        provider_id=new_provider_id,
+                        otp_code=None,
+                        otp_expires_at=None,
+                        otp_purpose=None,
+                    )
+                )
+                await session.execute(stmt)
+                await session.commit()
+                result2 = await session.execute(
+                    select(UserModel).where(UserModel.id == user.id)
+                )
+                return result2.scalars().first()
+            else:
+                # No stub — create fresh
+                user = UserModel(
+                    provider_id=f"oss_{int(datetime.now(timezone.utc).timestamp())}_{uuid.uuid4()}",
+                    email=normalized,
+                    password_hash=password_hash,
+                )
+                session.add(user)
+                await session.commit()
+                await session.refresh(user)
+                return user

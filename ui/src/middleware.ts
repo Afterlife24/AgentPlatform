@@ -9,7 +9,7 @@ const OSS_TOKEN_COOKIE = 'dograh_auth_token';
 // '/embed' is public because the widget script is fetched by anonymous
 // visitors on third-party sites embedding the voice agent, not logged-in
 // dashboard users.
-const PUBLIC_PATHS = ['/auth/login', '/auth/signup', '/embed'];
+const PUBLIC_PATHS = ['/auth/login', '/auth/signup', '/auth/forgot-password', '/embed'];
 
 let cachedAuthProvider: string | null = null;
 

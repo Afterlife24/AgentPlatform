@@ -5039,6 +5039,56 @@ export type SignupRequest = {
 };
 
 /**
+ * SendSignupOtpRequest
+ */
+export type SendSignupOtpRequest = {
+    email: string;
+    password: string;
+    name?: string | null;
+};
+
+/**
+ * VerifySignupOtpRequest
+ */
+export type VerifySignupOtpRequest = {
+    email: string;
+    otp: string;
+    password: string;
+    name?: string | null;
+};
+
+/**
+ * ForgotPasswordRequest
+ */
+export type ForgotPasswordRequest = {
+    email: string;
+};
+
+/**
+ * VerifyResetOtpRequest
+ */
+export type VerifyResetOtpRequest = {
+    email: string;
+    otp: string;
+};
+
+/**
+ * ResetPasswordRequest
+ */
+export type ResetPasswordRequest = {
+    email: string;
+    otp: string;
+    new_password: string;
+};
+
+/**
+ * MessageResponse
+ */
+export type MessageResponse = {
+    message: string;
+};
+
+/**
  * Smallest AI
  *
  * Smallest AI ultralow-latency TTS (Waves) and STT (Pulse) APIs.
