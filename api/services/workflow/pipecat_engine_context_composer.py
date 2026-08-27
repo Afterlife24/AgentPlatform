@@ -6,18 +6,18 @@ reusable functions. Defines recording response mode markers and instructions.
 
 from typing import TYPE_CHECKING, Callable, Optional
 
+from loguru import logger
+
 if TYPE_CHECKING:
     from api.services.workflow.pipecat_engine_custom_tools import CustomToolManager
     from api.services.workflow.workflow_graph import Node, WorkflowGraph
 
 from api.services.workflow.pipecat_engine_custom_tools import get_function_schema
 from api.services.workflow.tools.knowledge_base import get_knowledge_base_tool
-from api.services.workflow.tools.knowledge_base_filter import get_knowledge_base_filter_tool
-from api.services.workflow.tools.knowledge_base_aggregate import get_knowledge_base_aggregate_tool
 from api.services.workflow.tools.csv_table import (
     get_column_schema_for_tables,
-    get_csv_aggregate_tool,
-    get_csv_query_tool,
+    get_value_profile_for_tables,
+    render_value_profile,
 )
 from api.services.workflow.tools.csv_sql_executor import get_csv_sql_tool
 from api.db import db_client
@@ -55,24 +55,29 @@ RULES:
 - *NEVER* mix modes in a single response, since we rely on the markers to decide whether to play using TTS or Pre-recorded audio."""
 
 
-def compose_system_prompt_for_node(
+async def compose_system_prompt_for_node(
     *,
     node: "Node",
     workflow: "WorkflowGraph",
     format_prompt: Callable[[str], str],
     has_recordings: bool,
+    organization_id: Optional[int] = None,
+    csv_table_uuids: Optional[list[str]] = None,
 ) -> str:
     """Compose the full system prompt text for a workflow node.
 
-    Combines the global prompt, node-specific prompt, and (when recordings
-    are enabled anywhere in the workflow) the recording response mode
-    instructions into a single string.
+    Combines the global prompt, node-specific prompt, the auto-injected
+    value profile (when the node has CSV tables attached), and (when
+    recordings are enabled) the recording response mode instructions.
 
     Args:
         node: The workflow node to compose the prompt for.
         workflow: The full workflow graph (needed for global node prompt).
         format_prompt: Callable to render template variables in prompts.
         has_recordings: Whether any node in the workflow uses recordings.
+        organization_id: Tenant scope for the value-profile lookup.
+        csv_table_uuids: Already-resolved csv_tables.table_uuid values for
+            this node — resolution stays in the engine so it is not duplicated.
 
     Returns:
         The composed system prompt text.
@@ -86,10 +91,47 @@ def compose_system_prompt_for_node(
 
     parts = [p for p in (global_prompt, formatted_node_prompt) if p]
 
+    # Facts come from the table, policy comes from the prompt.
+    # Injecting the actual values stops the LLM guessing a value that does
+    # not exist in the data.
+    if organization_id and csv_table_uuids:
+        logger.info(
+            f"🧩 [Composer] compose_system_prompt_for_node | "
+            f"node={node.id if hasattr(node,'id') else 'unknown'} "
+            f"org={organization_id} table_uuids={csv_table_uuids} — injecting value profile"
+        )
+        profile = await get_value_profile_for_tables(organization_id, csv_table_uuids)
+        rendered = render_value_profile(profile)
+        if rendered:
+            parts.append(rendered)
+            logger.info(
+                f"🧩 [Composer] compose_system_prompt_for_node | "
+                f"value profile injected: {len(profile)} columns, {len(rendered)} chars"
+            )
+        else:
+            logger.warning(
+                f"🧩 [Composer] compose_system_prompt_for_node | "
+                f"value profile resolved to empty — LLM will not see column values"
+            )
+
     if has_recordings and "RECORDING_ID:" in formatted_node_prompt:
         parts.append(RECORDING_RESPONSE_MODE_INSTRUCTIONS)
 
     return "\n\n".join(parts)
+
+
+def _schema_function_name(schema) -> Optional[str]:
+    """Best-effort function name from a composed tool schema."""
+    name = getattr(schema, "name", None)
+    if isinstance(name, str):
+        return name
+    if isinstance(schema, dict):
+        if isinstance(schema.get("name"), str):
+            return schema["name"]
+        fn = schema.get("function")
+        if isinstance(fn, dict) and isinstance(fn.get("name"), str):
+            return fn["name"]
+    return None
 
 
 async def compose_functions_for_node(
@@ -100,8 +142,8 @@ async def compose_functions_for_node(
 ) -> list[dict]:
     """Compose the function/tool schemas for a workflow node.
 
-    Gathers knowledge-base tools, custom tools (including built-in
-    categories like calculator), and transition function schemas
+    Gathers knowledge-base tools, the CSV SQL tool, custom tools (including
+    built-in categories like calculator), and transition function schemas
     into a single list.
 
     Args:
@@ -114,9 +156,11 @@ async def compose_functions_for_node(
     """
     functions: list[dict] = []
 
-    # Knowledge base retrieval tool
+    # Knowledge base retrieval tool — only retrieve_from_knowledge_base.
+    # filter_knowledge_base and aggregate_knowledge_base are retired: they
+    # duplicate the SQL path against a weaker substrate and were already
+    # forbidden by the node prompts.
     if node.document_uuids:
-        # Separate table documents from RAG documents for schema injection
         rag_doc_uuids = []
         csv_table_uuids_from_docs = []
         if organization_id:
@@ -149,43 +193,7 @@ async def compose_functions_for_node(
             )
             functions.append(kb_schema)
 
-            # Metadata filter tool
-            available_fields = None
-            if organization_id:
-                try:
-                    available_fields = await db_client.get_metadata_fields_for_org(
-                        organization_id=organization_id,
-                        document_uuids=rag_doc_uuids,
-                    )
-                except Exception:
-                    pass
-
-            kb_filter_def = get_knowledge_base_filter_tool(
-                rag_doc_uuids,
-                available_metadata_fields=available_fields,
-            )
-            kb_filter_schema = get_function_schema(
-                kb_filter_def["function"]["name"],
-                kb_filter_def["function"]["description"],
-                properties=kb_filter_def["function"]["parameters"].get("properties", {}),
-                required=kb_filter_def["function"]["parameters"].get("required", []),
-            )
-            functions.append(kb_filter_schema)
-
-            # Aggregation tool
-            kb_agg_def = get_knowledge_base_aggregate_tool(
-                rag_doc_uuids,
-                available_metadata_fields=available_fields,
-            )
-            kb_agg_schema = get_function_schema(
-                kb_agg_def["function"]["name"],
-                kb_agg_def["function"]["description"],
-                properties=kb_agg_def["function"]["parameters"].get("properties", {}),
-                required=kb_agg_def["function"]["parameters"].get("required", []),
-            )
-            functions.append(kb_agg_schema)
-
-        # Table-mode documents found via document_uuids → inject CSV tool schemas
+        # Table-mode documents — register execute_csv_sql
         if csv_table_uuids_from_docs:
             col_schema_from_docs = None
             if organization_id:
@@ -196,20 +204,6 @@ async def compose_functions_for_node(
                 except Exception:
                     pass
 
-            csv_q_def = get_csv_query_tool(csv_table_uuids_from_docs, col_schema_from_docs)
-            functions.append(get_function_schema(
-                csv_q_def["function"]["name"],
-                csv_q_def["function"]["description"],
-                properties=csv_q_def["function"]["parameters"].get("properties", {}),
-                required=csv_q_def["function"]["parameters"].get("required", []),
-            ))
-            csv_a_def = get_csv_aggregate_tool(csv_table_uuids_from_docs, col_schema_from_docs)
-            functions.append(get_function_schema(
-                csv_a_def["function"]["name"],
-                csv_a_def["function"]["description"],
-                properties=csv_a_def["function"]["parameters"].get("properties", {}),
-                required=csv_a_def["function"]["parameters"].get("required", []),
-            ))
             csv_sql_def = get_csv_sql_tool(csv_table_uuids_from_docs, col_schema_from_docs)
             functions.append(get_function_schema(
                 csv_sql_def["function"]["name"],
@@ -218,10 +212,8 @@ async def compose_functions_for_node(
                 required=csv_sql_def["function"]["parameters"].get("required", []),
             ))
 
-    # CSV table query + aggregate tools — resolve document UUIDs to csv table UUIDs
+    # CSV Tables section — execute_csv_sql only
     if node.csv_table_uuids:
-        # Resolve: csv_table_uuids may hold document_uuids (KB upload path)
-        # Run same split logic to get the actual csv_tables.table_uuid values
         resolved_csv_uuids: list[str] = []
         if organization_id:
             try:
@@ -241,7 +233,6 @@ async def compose_functions_for_node(
                         if t_uuid:
                             resolved_csv_uuids.append(t_uuid)
                     else:
-                        # Treat as a direct csv_tables.table_uuid
                         resolved_csv_uuids.append(doc_uuid)
             except Exception:
                 resolved_csv_uuids = node.csv_table_uuids
@@ -256,24 +247,6 @@ async def compose_functions_for_node(
                 )
             except Exception:
                 pass
-
-        csv_query_def = get_csv_query_tool(effective_uuids, col_schema)
-        csv_query_schema = get_function_schema(
-            csv_query_def["function"]["name"],
-            csv_query_def["function"]["description"],
-            properties=csv_query_def["function"]["parameters"].get("properties", {}),
-            required=csv_query_def["function"]["parameters"].get("required", []),
-        )
-        functions.append(csv_query_schema)
-
-        csv_agg_def = get_csv_aggregate_tool(effective_uuids, col_schema)
-        csv_agg_schema = get_function_schema(
-            csv_agg_def["function"]["name"],
-            csv_agg_def["function"]["description"],
-            properties=csv_agg_def["function"]["parameters"].get("properties", {}),
-            required=csv_agg_def["function"]["parameters"].get("required", []),
-        )
-        functions.append(csv_agg_schema)
 
         csv_sql_def = get_csv_sql_tool(effective_uuids, col_schema)
         csv_sql_schema = get_function_schema(
@@ -299,4 +272,17 @@ async def compose_functions_for_node(
         )
         functions.append(function_schema)
 
-    return functions
+    # De-duplicate by function name — keep first occurrence, preserve order.
+    # Both block A (table-mode docs) and block B (csv_table_uuids) can
+    # append execute_csv_sql; de-duplication makes that structurally safe.
+    deduped: list[dict] = []
+    seen_function_names: set[str] = set()
+    for schema in functions:
+        fn_name = _schema_function_name(schema)
+        if fn_name is not None:
+            if fn_name in seen_function_names:
+                continue
+            seen_function_names.add(fn_name)
+        deduped.append(schema)
+
+    return deduped
