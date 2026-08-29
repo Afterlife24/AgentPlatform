@@ -19,6 +19,10 @@ from api.services.gen_ai import build_embedding_service
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.storage import storage_fs
 from api.services.workflow.tools.chunk_contextualiser import contextualise_chunks
+from api.services.workflow.tools.csv_table import (
+    build_value_profile_from_rows,
+    clear_value_profile_cache,
+)
 from api.services.workflow.tools.metadata_extraction import (
     extract_metadata_from_structured_json,
     extract_metadata_from_text,
@@ -843,13 +847,20 @@ async def _process_as_csv_table(
         # Insert all rows
         await db_client.insert_csv_rows(table.id, organization_id, rows)
 
+        value_profile = build_value_profile_from_rows(rows, col_schema)
+
         # Update csv_tables status
         await db_client.update_csv_table_status(
             table.id,
             "completed",
             row_count=len(rows),
             column_schema=col_schema,
+            value_profile=value_profile,
         )
+
+        # Invalidate the in-process value-profile cache so the next turn
+        # picks up the freshly ingested data rather than serving stale columns.
+        clear_value_profile_cache()
 
         # Update the knowledge_base_document status and store table_uuid in
         # docling_metadata so the pipecat engine can find it by document_uuid
