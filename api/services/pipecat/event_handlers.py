@@ -332,9 +332,45 @@ def register_event_handlers(
             state=WorkflowRunState.COMPLETED.value,
         )
 
+        # Build flat PostHog properties from everything written to the DB
+        call_completed_properties: dict = {}
+
+        # --- usage_info: LLM / TTS / STT tokens + call duration ---
+        # LLM: flatten per-model token counts with prefixed keys
+        for model_key, token_data in (usage_info.get("llm") or {}).items():
+            safe_key = model_key.replace("|||", "__")
+            for metric, value in (token_data or {}).items():
+                call_completed_properties[f"llm__{safe_key}__{metric}"] = value
+
+        # TTS: characters per model
+        for model_key, char_count in (usage_info.get("tts") or {}).items():
+            safe_key = model_key.replace("|||", "__")
+            call_completed_properties[f"tts__{safe_key}__characters"] = char_count
+
+        # STT: seconds per model
+        for model_key, stt_seconds in (usage_info.get("stt") or {}).items():
+            safe_key = model_key.replace("|||", "__")
+            call_completed_properties[f"stt__{safe_key}__seconds"] = stt_seconds
+
+        # Call duration
+        call_completed_properties["call_duration_seconds"] = usage_info.get(
+            "call_duration_seconds", 0
+        )
+
+        # --- gathered_context: disposition, tags, trace url, etc. ---
+        for ctx_key, ctx_value in (gathered_context or {}).items():
+            # Skip large/nested objects that aren't useful as PostHog properties
+            if isinstance(ctx_value, (str, int, float, bool)) or ctx_value is None:
+                call_completed_properties[f"ctx__{ctx_key}"] = ctx_value
+            elif isinstance(ctx_value, list):
+                call_completed_properties[f"ctx__{ctx_key}"] = ctx_value
+
         asyncio.create_task(
             _capture_call_event(
-                workflow_run_id, user_provider_id, PostHogEvent.CALL_COMPLETED
+                workflow_run_id,
+                user_provider_id,
+                PostHogEvent.CALL_COMPLETED,
+                extra_properties=call_completed_properties,
             )
         )
 
