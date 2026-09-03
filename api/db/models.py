@@ -1545,6 +1545,11 @@ class CsvTableModel(Base):
     # JSON array of {"name": "Brand", "type": "text"} — one entry per column
     column_schema = Column(JSON, nullable=False, default=list)
 
+    # JSON array of per-column value profiles, computed at ingest and injected
+    # into the node system prompt. Nullable: rows created before this column
+    # existed keep working via the lazy compute-on-first-use fallback.
+    value_profile = Column(JSON, nullable=True)
+
     # Processing lifecycle — same status values as KB documents
     processing_status = Column(
         String(20), nullable=False, default="pending", server_default="pending"

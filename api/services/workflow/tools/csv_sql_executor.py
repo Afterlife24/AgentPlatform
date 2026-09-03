@@ -49,6 +49,91 @@ _INJECTION_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# Matches equality predicates on JSONB keys: row_data->>'Col' = 'value'
+_EQ_PREDICATE = re.compile(
+    r"row_data\s*->>\s*'([^']+)'\s*=\s*'([^']*)'",
+    re.IGNORECASE,
+)
+
+_DIAGNOSTIC_MAX_COLUMNS = 5
+_DIAGNOSTIC_VALUE_CUTOFF = 25
+_DIAGNOSTIC_EXAMPLES = 3
+
+
+async def _zero_row_diagnostic(
+    organization_id: int,
+    table_ids: List[int],
+    sql: str,
+) -> Optional[Dict[str, Any]]:
+    """Explain a zero-row result.
+
+    For every equality predicate in the authored SQL, report what the
+    filtered column actually contains — same info as the value profile,
+    delivered at the moment of failure so the LLM can self-correct.
+    Returns None when there is nothing useful to say.
+    """
+    matches = _EQ_PREDICATE.findall(sql)
+    if not matches:
+        return None
+
+    table_ids_sql = ",".join(str(t) for t in table_ids)
+    seen: set = set()
+    columns: List[Dict[str, Any]] = []
+
+    for col_name, filtered_value in matches:
+        if col_name in seen or len(columns) >= _DIAGNOSTIC_MAX_COLUMNS:
+            continue
+        seen.add(col_name)
+        try:
+            rows = await db_client.execute_raw_query(
+                f"""
+                SELECT DISTINCT row_data->>:col AS v
+                FROM csv_table_rows
+                WHERE organization_id = :org_id
+                  AND table_id IN ({table_ids_sql})
+                  AND row_data->>:col IS NOT NULL
+                  AND row_data->>:col <> ''
+                ORDER BY 1
+                LIMIT {_DIAGNOSTIC_VALUE_CUTOFF + 1}
+                """,
+                {"col": col_name, "org_id": organization_id},
+            )
+        except Exception as e:
+            logger.warning(f"zero-row diagnostic failed for column '{col_name}': {e}")
+            continue
+
+        values = [r["v"] for r in rows]
+        entry: Dict[str, Any] = {
+            "column": col_name,
+            "filtered_value": filtered_value,
+        }
+        if not values:
+            entry["actual_values"] = []
+            entry["note"] = (
+                "This column is empty or does not exist in the table. "
+                "A misspelled column name returns NULL, not an error."
+            )
+        elif len(values) <= _DIAGNOSTIC_VALUE_CUTOFF:
+            entry["actual_values"] = values
+        else:
+            entry["distinct_count_over_cutoff"] = True
+            entry["example_values"] = values[:_DIAGNOSTIC_EXAMPLES]
+        columns.append(entry)
+
+    if not columns:
+        return None
+
+    return {
+        "reason": "zero_rows_with_equality_filters",
+        "hint": (
+            "The query returned no rows. The equality filters below may not match "
+            "any stored value. Retry with a broader query before concluding the "
+            "data is absent: replace = with ILIKE '%...%', use one of the actual "
+            "values listed, and search related columns with OR."
+        ),
+        "columns": columns,
+    }
+
 
 def validate_sql(sql: str) -> tuple[bool, str]:
     """Validate that a SQL string is a safe read-only SELECT query.
@@ -171,30 +256,46 @@ async def execute_csv_sql(
     Returns:
         Dict with rows, total_results, columns, and the executed SQL.
     """
+    logger.info(
+        f"🔍 [CsvSqlExecutor] execute_csv_sql | "
+        f"org={organization_id} tables={table_uuids} limit={limit}"
+    )
+    logger.debug(f"🔍 [CsvSqlExecutor] SQL received:\n{sql}")
+
     limit = min(limit, 100)
 
     # Step 1: Validate SQL safety
     is_valid, error = validate_sql(sql)
     if not is_valid:
-        logger.warning(f"SQL validation failed: {error} | SQL: {sql[:200]}")
+        logger.warning(
+            f"🔍 [CsvSqlExecutor] SQL REJECTED | reason='{error}' | sql={sql[:200]}"
+        )
         return {
             "error": f"SQL rejected: {error}",
             "rows": [],
             "total_results": 0,
             "columns": [],
+            "executed_sql": sql,
         }
 
     # Step 2: Resolve table UUIDs to internal IDs
-    table_ids = await db_client._resolve_table_uuids(
-        organization_id, table_uuids
-    )
+    table_ids = await db_client._resolve_table_uuids(organization_id, table_uuids)
     if not table_ids:
+        logger.warning(
+            f"🔍 [CsvSqlExecutor] NO TABLES FOUND | "
+            f"org={organization_id} uuids={table_uuids}"
+        )
         return {
             "error": "No tables found for the given UUIDs.",
             "rows": [],
             "total_results": 0,
             "columns": [],
+            "executed_sql": sql,
         }
+
+    logger.debug(
+        f"🔍 [CsvSqlExecutor] table_ids resolved: {table_uuids} → {table_ids}"
+    )
 
     # Step 3: Wrap user SQL in a CTE that provides 'csv_data' scoped to org + tables
     table_ids_sql = ",".join(str(t) for t in table_ids)
@@ -220,30 +321,53 @@ async def execute_csv_sql(
 
     params = {"org_id": organization_id, "max_limit": limit}
 
-    logger.info(f"CSV SQL executor | org={organization_id} | sql={sql[:200]}")
+    logger.info(f"🔍 [CsvSqlExecutor] executing wrapped SQL | org={organization_id}")
 
     # Step 5: Execute
     try:
-        rows_raw = await db_client.execute_raw_query(
-            final_sql, params
-        )
+        rows_raw = await db_client.execute_raw_query(final_sql, params)
 
-        # Format results
         rows = []
         columns: List[str] = []
         if rows_raw:
             columns = list(rows_raw[0].keys())
             rows = rows_raw
 
-        return {
+        logger.info(
+            f"🔍 [CsvSqlExecutor] RESULT | "
+            f"rows={len(rows)} columns={columns[:6]}{'...' if len(columns) > 6 else ''}"
+        )
+
+        result: Dict[str, Any] = {
             "rows": rows,
             "total_results": len(rows),
             "columns": columns,
             "executed_sql": sql,
         }
+        if not rows:
+            logger.warning(
+                f"🔍 [CsvSqlExecutor] ZERO ROWS | "
+                f"running diagnostic for SQL: {sql[:200]}"
+            )
+            diagnostic = await _zero_row_diagnostic(organization_id, table_ids, sql)
+            if diagnostic:
+                result["diagnostic"] = diagnostic
+                logger.warning(
+                    f"🔍 [CsvSqlExecutor] DIAGNOSTIC | "
+                    f"equality filters checked: "
+                    f"{[c['column'] for c in diagnostic.get('columns', [])]}"
+                )
+            else:
+                logger.debug(
+                    f"🔍 [CsvSqlExecutor] ZERO ROWS | no equality filters to diagnose"
+                )
+        return result
 
     except Exception as e:
-        logger.error(f"CSV SQL execution failed: {e} | SQL: {final_sql[:300]}")
+        logger.error(
+            f"🔍 [CsvSqlExecutor] EXECUTION FAILED | "
+            f"error={e} | sql={final_sql[:300]}"
+        )
         return {
             "error": f"Query execution failed: {str(e)}",
             "rows": [],

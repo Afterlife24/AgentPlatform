@@ -157,6 +157,7 @@ class CsvTableClient(BaseDBClient):
         *,
         row_count: int = 0,
         column_schema: Optional[List[Dict]] = None,
+        value_profile: Optional[List[Dict]] = None,
         error: Optional[str] = None,
     ) -> None:
         values: Dict[str, Any] = {
@@ -167,6 +168,8 @@ class CsvTableClient(BaseDBClient):
             values["row_count"] = row_count
         if column_schema is not None:
             values["column_schema"] = column_schema
+        if value_profile is not None:
+            values["value_profile"] = value_profile
         if error is not None:
             values["processing_error"] = error
 
@@ -175,6 +178,23 @@ class CsvTableClient(BaseDBClient):
                 update(CsvTableModel)
                 .where(CsvTableModel.id == table_id)
                 .values(**values)
+            )
+            await session.commit()
+
+    async def update_csv_table_value_profile(
+        self, table_id: int, value_profile: List[Dict]
+    ) -> None:
+        """Write only the value profile. Used by the lazy fallback in
+        get_value_profile_for_tables — must not disturb processing_status
+        or row_count."""
+        async with self.async_session() as session:
+            await session.execute(
+                update(CsvTableModel)
+                .where(CsvTableModel.id == table_id)
+                .values(
+                    value_profile=value_profile,
+                    updated_at=datetime.now(UTC),
+                )
             )
             await session.commit()
 

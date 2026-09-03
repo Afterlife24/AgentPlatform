@@ -40,6 +40,10 @@ from pydantic import BaseModel
 from api.db import db_client
 from api.services.auth.depends import get_user
 from api.services.storage import storage_fs
+from api.services.workflow.tools.csv_table import (
+    build_value_profile_from_rows,
+    clear_value_profile_cache,
+)
 
 router = APIRouter(prefix="/csv-tables", tags=["csv-tables"])
 
@@ -318,12 +322,19 @@ async def process_csv_table(
         if rows:
             await db_client.insert_csv_rows(table.id, org_id, rows)
 
+        value_profile = build_value_profile_from_rows(rows, col_schema)
+
         await db_client.update_csv_table_status(
             table.id,
             "completed",
             row_count=len(rows),
             column_schema=col_schema,
+            value_profile=value_profile,
         )
+
+        # Invalidate the in-process value-profile cache so the next turn
+        # picks up the freshly ingested data rather than serving stale columns.
+        clear_value_profile_cache()
 
         updated = await db_client.get_csv_table_by_id(table.id)
         logger.info(

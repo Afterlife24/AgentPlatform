@@ -53,16 +53,8 @@ from api.services.workflow.pipecat_engine_variable_extractor import (
 from api.services.workflow.tools.knowledge_base import (
     retrieve_from_knowledge_base,
 )
-from api.services.workflow.tools.knowledge_base_filter import (
-    filter_knowledge_base,
-)
-from api.services.workflow.tools.knowledge_base_aggregate import (
-    aggregate_knowledge_base,
-)
 from api.services.workflow.tools.csv_table import (
-    aggregate_csv_table,
     get_column_schema_for_tables,
-    query_csv_table,
 )
 from api.services.workflow.tools.csv_sql_executor import (
     execute_csv_sql,
@@ -539,195 +531,6 @@ class PipecatEngine:
         self.llm.register_function(
             "retrieve_from_knowledge_base", retrieve_kb_func)
 
-    async def _register_knowledge_base_filter_function(
-        self, document_uuids: list[str]
-    ) -> None:
-        """Register knowledge base metadata filter function with the LLM.
-
-        This enables the LLM to perform exact-match and comparison queries
-        on structured metadata (e.g., "list all Terex cranes above 500 tons").
-
-        Args:
-            document_uuids: List of document UUIDs to scope the filter.
-        """
-        logger.debug(
-            f"Registering knowledge base filter function with "
-            f"{len(document_uuids)} document(s)"
-        )
-
-        async def filter_kb_func(function_call_params: FunctionCallParams) -> None:
-            logger.info("LLM Function Call EXECUTED: filter_knowledge_base")
-            logger.info(f"Arguments: {function_call_params.arguments}")
-
-            try:
-                filters = function_call_params.arguments.get("filters", {})
-                limit = function_call_params.arguments.get("limit", 20)
-                organization_id = await self._get_organization_id()
-
-                if not organization_id:
-                    raise ValueError(
-                        "Organization ID not available for knowledge base filter"
-                    )
-
-                result = await filter_knowledge_base(
-                    organization_id=organization_id,
-                    document_uuids=document_uuids,
-                    filters=filters,
-                    limit=limit,
-                    correlation_id=self._call_context_vars.get(
-                        MPS_CORRELATION_ID_CONTEXT_KEY
-                    ),
-                    tracing_context=self._get_otel_context(),
-                )
-
-                await function_call_params.result_callback(result)
-
-            except Exception as e:
-                logger.error(f"Knowledge base filter failed: {e}")
-                await function_call_params.result_callback(
-                    {
-                        "error": str(e),
-                        "results": [],
-                        "filters_applied": {},
-                        "total_results": 0,
-                    }
-                )
-
-        self.llm.register_function("filter_knowledge_base", filter_kb_func)
-
-    async def _register_knowledge_base_aggregate_function(
-        self, document_uuids: list[str]
-    ) -> None:
-        """Register knowledge base aggregation function with the LLM."""
-        logger.debug(
-            f"Registering knowledge base aggregate function with "
-            f"{len(document_uuids)} document(s)"
-        )
-
-        async def aggregate_kb_func(function_call_params: FunctionCallParams) -> None:
-            logger.info("LLM Function Call EXECUTED: aggregate_knowledge_base")
-            logger.info(f"Arguments: {function_call_params.arguments}")
-
-            try:
-                args = function_call_params.arguments
-                organization_id = await self._get_organization_id()
-
-                if not organization_id:
-                    raise ValueError(
-                        "Organization ID not available for knowledge base aggregation"
-                    )
-
-                result = await aggregate_knowledge_base(
-                    organization_id=organization_id,
-                    document_uuids=document_uuids,
-                    group_by=args.get("group_by"),
-                    aggregate_field=args.get("aggregate_field"),
-                    aggregate_function=args.get("aggregate_function", "count"),
-                    filters=args.get("filters"),
-                    order_by=args.get("order_by", "desc"),
-                    limit=args.get("limit", 20),
-                )
-
-                await function_call_params.result_callback(result)
-
-            except Exception as e:
-                logger.error(f"Knowledge base aggregation failed: {e}")
-                await function_call_params.result_callback(
-                    {"error": str(e), "results": []}
-                )
-
-        self.llm.register_function(
-            "aggregate_knowledge_base", aggregate_kb_func)
-
-    async def _register_csv_query_function(
-        self, table_uuids: list[str]
-    ) -> None:
-        """Register query_csv_table function with the LLM.
-
-        Filters CSV table rows by exact match or comparison operators.
-        Activated when a node has csv_table_uuids set.
-        """
-        logger.debug(
-            f"Registering csv query function with {len(table_uuids)} table(s)"
-        )
-
-        async def csv_query_func(function_call_params: FunctionCallParams) -> None:
-            logger.info("LLM Function Call EXECUTED: query_csv_table")
-            logger.info(f"Arguments: {function_call_params.arguments}")
-            try:
-                args = function_call_params.arguments
-                organization_id = await self._get_organization_id()
-                if not organization_id:
-                    raise ValueError("Organization ID not available for CSV table query")
-
-                # Accept both {"query": "..."} and legacy structured args
-                # If LLM passes structured args, convert to natural language query
-                query = args.get("query", "")
-                if not query:
-                    # Build query from any other args the LLM passed
-                    parts = []
-                    for k, v in args.items():
-                        if k not in ("limit", "columns", "column_names"):
-                            parts.append(f"{k}={v}")
-                    if parts:
-                        query = " ".join(parts)
-                    else:
-                        query = "show all data"
-
-                result = await query_csv_table(
-                    organization_id=organization_id,
-                    table_uuids=table_uuids,
-                    query=query,
-                    limit=args.get("limit", 20),
-                    llm_api_key=self._rag_llm_api_key,
-                    llm_model=self._rag_llm_model,
-                    llm_base_url=self._rag_llm_base_url,
-                )
-                await function_call_params.result_callback(result)
-            except Exception as e:
-                logger.error(f"CSV table query failed: {e}")
-                await function_call_params.result_callback(
-                    {"error": str(e), "rows": [], "total_results": 0, "columns": []}
-                )
-
-        self.llm.register_function("query_csv_table", csv_query_func)
-
-    async def _register_csv_aggregate_function(
-        self, table_uuids: list[str]
-    ) -> None:
-        """Register aggregate_csv_table function with the LLM."""
-        logger.debug(
-            f"Registering csv aggregate function with {len(table_uuids)} table(s)"
-        )
-
-        async def csv_agg_func(function_call_params: FunctionCallParams) -> None:
-            logger.info("LLM Function Call EXECUTED: aggregate_csv_table")
-            logger.info(f"Arguments: {function_call_params.arguments}")
-            try:
-                args = function_call_params.arguments
-                organization_id = await self._get_organization_id()
-                if not organization_id:
-                    raise ValueError("Organization ID not available for CSV table aggregation")
-
-                result = await aggregate_csv_table(
-                    organization_id=organization_id,
-                    table_uuids=table_uuids,
-                    aggregate_function=args.get("aggregate_function", "count"),
-                    aggregate_field=args.get("aggregate_field"),
-                    group_by=args.get("group_by"),
-                    filters=args.get("filters"),
-                    order_by=args.get("order_by", "desc"),
-                    limit=args.get("limit", 20),
-                )
-                await function_call_params.result_callback(result)
-            except Exception as e:
-                logger.error(f"CSV table aggregation failed: {e}")
-                await function_call_params.result_callback(
-                    {"error": str(e), "results": []}
-                )
-
-        self.llm.register_function("aggregate_csv_table", csv_agg_func)
-
     async def _register_csv_sql_function(
         self, table_uuids: list[str]
     ) -> None:
@@ -907,6 +710,9 @@ class PipecatEngine:
             )
 
         # Register knowledge base retrieval handler if node has documents
+        # Collect all resolved CSV table UUIDs for value-profile injection
+        resolved_csv_table_uuids: list[str] = []
+
         if node.document_uuids:
             # Auto-heal stale UUIDs: if any stored UUID no longer maps to an
             # active document (e.g. after a doc re-upload by a teammate), fall
@@ -920,13 +726,11 @@ class PipecatEngine:
 
             if rag_uuids:
                 await self._register_knowledge_base_function(rag_uuids)
-                await self._register_knowledge_base_filter_function(rag_uuids)
-                await self._register_knowledge_base_aggregate_function(rag_uuids)
+
 
             if table_uuids_from_docs:
-                await self._register_csv_query_function(table_uuids_from_docs)
-                await self._register_csv_aggregate_function(table_uuids_from_docs)
                 await self._register_csv_sql_function(table_uuids_from_docs)
+                resolved_csv_table_uuids.extend(table_uuids_from_docs)
 
         # Register CSV table query/aggregate handlers if node has csv_table_uuids
         # csv_table_uuids may contain either:
@@ -945,21 +749,25 @@ class PipecatEngine:
             logger.info(
                 f"CSV table UUIDs resolved: {node.csv_table_uuids} → {effective_csv_uuids}"
             )
-            await self._register_csv_query_function(effective_csv_uuids)
-            await self._register_csv_aggregate_function(effective_csv_uuids)
             await self._register_csv_sql_function(effective_csv_uuids)
+            resolved_csv_table_uuids.extend(effective_csv_uuids)
 
         # Compose prompt and functions via the context composer module
-        system_prompt = compose_system_prompt_for_node(
+        organization_id = await self._get_organization_id()
+        # dict.fromkeys de-duplicates while preserving order
+        node_csv_table_uuids = list(dict.fromkeys(resolved_csv_table_uuids))
+        system_prompt = await compose_system_prompt_for_node(
             node=node,
             workflow=self.workflow,
             format_prompt=self._format_prompt,
             has_recordings=self._has_recordings,
+            organization_id=organization_id,
+            csv_table_uuids=node_csv_table_uuids,
         )
         functions = await compose_functions_for_node(
             node=node,
             custom_tool_manager=self._custom_tool_manager,
-            organization_id=await self._get_organization_id(),
+            organization_id=organization_id,
         )
         await self._update_llm_context(system_prompt, functions)
 
