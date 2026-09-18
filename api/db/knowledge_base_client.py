@@ -255,8 +255,10 @@ class KnowledgeBaseClient(BaseDBClient):
                 return None
 
             document.processing_status = status
-            if error_message:
+            if error_message is not None:
                 document.processing_error = error_message
+            elif status in ("processing", "completed"):
+                document.processing_error = None
             if total_chunks is not None:
                 document.total_chunks = total_chunks
             if docling_metadata:

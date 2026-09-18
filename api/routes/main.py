@@ -12,6 +12,8 @@ from api.routes.credentials import router as credentials_router
 from api.routes.folder import router as folder_router
 from api.routes.knowledge_base import router as knowledge_base_router
 from api.routes.csv_tables import router as csv_tables_router
+from api.routes.db_tables import router as db_tables_router
+from api.constants import ENABLE_RELATIONAL_DATASET
 from api.routes.node_types import router as node_types_router
 from api.routes.organization import router as organization_router
 from api.routes.organization_usage import router as organization_usage_router
@@ -61,6 +63,8 @@ router.include_router(public_download_router)
 router.include_router(workflow_embed_router)
 router.include_router(knowledge_base_router)
 router.include_router(csv_tables_router)
+if ENABLE_RELATIONAL_DATASET:
+    router.include_router(db_tables_router)
 router.include_router(workflow_recording_router)
 router.include_router(folder_router)
 router.include_router(auth_router)

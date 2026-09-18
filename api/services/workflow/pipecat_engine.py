@@ -425,17 +425,16 @@ class PipecatEngine:
             return document_uuids
 
     async def _split_document_uuids_by_mode(
-        self, document_uuids: list[str]
-    ) -> tuple[list[str], list[str]]:
-        """Split document UUIDs into RAG docs vs table docs."""
+        self, document_uuids: list[str], include_database: bool = False
+    ) -> tuple:
+        """Split document UUIDs into RAG docs, table docs, and database docs."""
         from api.db import db_client as _db
 
         rag_uuids: list[str] = []
         csv_table_uuids: list[str] = []
+        db_table_uuids: list[str] = []
 
         try:
-            org_id = await self._get_organization_id()
-
             for doc_uuid in document_uuids:
                 # Use raw query to avoid org_id requirement issues
                 rows = await _db.execute_raw_query(
@@ -448,8 +447,9 @@ class PipecatEngine:
                     continue
 
                 doc = rows[0]
-                if doc["retrieval_mode"] == "table":
-                    meta = doc["docling_metadata"] or {}
+                mode = doc.get("retrieval_mode")
+                if mode == "table":
+                    meta = doc.get("docling_metadata") or {}
                     table_uuid = meta.get("table_uuid")
                     if table_uuid:
                         csv_table_uuids.append(table_uuid)
@@ -460,13 +460,22 @@ class PipecatEngine:
                         logger.warning(
                             f"Document {doc_uuid[:8]} has retrieval_mode=table but no table_uuid in metadata"
                         )
+                elif mode == "database":
+                    db_table_uuids.append(doc_uuid)
+                    logger.debug(
+                        f"Document {doc_uuid[:8]} is a database table"
+                    )
                 else:
                     rag_uuids.append(doc_uuid)
 
         except Exception as exc:
             logger.warning(f"Failed to split document UUIDs by mode: {exc}")
+            if include_database:
+                return document_uuids, [], []
             return document_uuids, []
 
+        if include_database:
+            return rag_uuids, csv_table_uuids, db_table_uuids
         return rag_uuids, csv_table_uuids
 
     async def _register_knowledge_base_function(
@@ -575,6 +584,91 @@ class PipecatEngine:
                 )
 
         self.llm.register_function("execute_csv_sql", csv_sql_func)
+
+    async def _register_db_sql_function(
+        self, allowed_tables: set[str]
+    ) -> None:
+        """Register execute_db_sql function with the LLM."""
+        logger.debug(
+            f"Registering database sql executor with allowed relations: {allowed_tables}"
+        )
+
+        async def db_sql_func(function_call_params: FunctionCallParams) -> None:
+            logger.info("LLM Function Call EXECUTED: execute_db_sql")
+            logger.info(f"Arguments: {function_call_params.arguments}")
+            try:
+                args = function_call_params.arguments
+                organization_id = await self._get_organization_id()
+                if not organization_id:
+                    raise ValueError("Organization ID not available for Database SQL execution")
+
+                sql = args.get("sql", "")
+                if not sql:
+                    await function_call_params.result_callback(
+                        {"error": "No SQL provided.", "rows": [], "total_results": 0, "columns": []}
+                    )
+                    return
+
+                from api.services.workflow.tools.db_sql_executor import execute_db_sql
+                result = await execute_db_sql(
+                    organization_id=organization_id,
+                    allowed_relations=allowed_tables,
+                    sql=sql,
+                    limit=args.get("limit", 20),
+                    is_interactive=True,
+                )
+                await function_call_params.result_callback(result)
+            except Exception as e:
+                logger.error(f"Database SQL execution failed: {e}")
+                await function_call_params.result_callback(
+                    {"error": str(e), "rows": [], "total_results": 0, "columns": []}
+                )
+
+        self.llm.register_function("execute_db_sql", db_sql_func)
+
+    async def _register_db_lookup_function(
+        self, allowed_tables: set[str]
+    ) -> None:
+        """Register lookup_db_column_values function with the LLM."""
+        logger.debug(
+            f"Registering lookup_db_column_values with allowed relations: {allowed_tables}"
+        )
+
+        lookup_call_count = [0]
+
+        async def db_lookup_func(function_call_params: FunctionCallParams) -> None:
+            logger.info("LLM Function Call EXECUTED: lookup_db_column_values")
+            logger.info(f"Arguments: {function_call_params.arguments}")
+            try:
+                args = function_call_params.arguments
+                organization_id = await self._get_organization_id()
+                if not organization_id:
+                    raise ValueError("Organization ID not available for Database Lookup")
+
+                table = args.get("table", "")
+                column = args.get("column", "")
+                search = args.get("search")
+                limit = args.get("limit", 50)
+
+                from api.services.workflow.tools.db_sql_executor import lookup_db_column_values
+                result = await lookup_db_column_values(
+                    organization_id=organization_id,
+                    table_name=table,
+                    column_name=column,
+                    allowed_relations=allowed_tables,
+                    search=search,
+                    limit=limit,
+                    turn_call_count=lookup_call_count[0],
+                )
+                lookup_call_count[0] += 1
+                await function_call_params.result_callback(result)
+            except Exception as e:
+                logger.error(f"Database lookup failed: {e}")
+                await function_call_params.result_callback(
+                    {"success": False, "error": str(e)}
+                )
+
+        self.llm.register_function("lookup_db_column_values", db_lookup_func)
 
     async def _perform_variable_extraction_if_needed(
         self, node: Optional[Node], run_in_background: bool = True
@@ -712,6 +806,7 @@ class PipecatEngine:
         # Register knowledge base retrieval handler if node has documents
         # Collect all resolved CSV table UUIDs for value-profile injection
         resolved_csv_table_uuids: list[str] = []
+        resolved_db_table_uuids: list[str] = []
 
         if node.document_uuids:
             # Auto-heal stale UUIDs: if any stored UUID no longer maps to an
@@ -721,16 +816,20 @@ class PipecatEngine:
             # after re-uploading knowledge base files.
             resolved_uuids = await self._resolve_document_uuids(node.document_uuids)
 
-            # Separate table-mode documents from regular KB documents
-            rag_uuids, table_uuids_from_docs = await self._split_document_uuids_by_mode(resolved_uuids)
+            # Separate table-mode and database-mode documents from regular KB documents
+            rag_uuids, table_uuids_from_docs, db_uuids_from_docs = (
+                await self._split_document_uuids_by_mode(resolved_uuids, include_database=True)
+            )
 
             if rag_uuids:
                 await self._register_knowledge_base_function(rag_uuids)
 
-
             if table_uuids_from_docs:
                 await self._register_csv_sql_function(table_uuids_from_docs)
                 resolved_csv_table_uuids.extend(table_uuids_from_docs)
+
+            if db_uuids_from_docs:
+                resolved_db_table_uuids.extend(db_uuids_from_docs)
 
         # Register CSV table query/aggregate handlers if node has csv_table_uuids
         # csv_table_uuids may contain either:
@@ -752,8 +851,37 @@ class PipecatEngine:
             await self._register_csv_sql_function(effective_csv_uuids)
             resolved_csv_table_uuids.extend(effective_csv_uuids)
 
-        # Compose prompt and functions via the context composer module
+        # Register Database Table query and lookup handlers if node has db_table_uuids
+        node_db_uuids = getattr(node, "db_table_uuids", None)
+        if node_db_uuids:
+            healed_db_uuids = await self._resolve_document_uuids(node_db_uuids)
+            resolved_db_table_uuids.extend(healed_db_uuids)
+
         organization_id = await self._get_organization_id()
+        node_db_table_uuids = list(dict.fromkeys(resolved_db_table_uuids))
+
+        if node_db_table_uuids:
+            allowed_db_tables: set[str] = set()
+            if organization_id:
+                try:
+                    from api.db.db_table_client import db_table_client
+                    for uid in node_db_table_uuids:
+                        tbl = await db_table_client.get_db_table_by_document_uuid(uid, organization_id)
+                        if not tbl:
+                            tbl = await db_table_client.get_db_table_by_name(uid, organization_id)
+                        if tbl:
+                            allowed_db_tables.add(tbl.table_name)
+                            views = await db_table_client.list_views(tbl.id, organization_id)
+                            for v in views:
+                                allowed_db_tables.add(v.view_name)
+                except Exception as e:
+                    logger.warning(f"Failed resolving allowed relations for DB tables: {e}")
+
+            if allowed_db_tables:
+                await self._register_db_sql_function(allowed_db_tables)
+                await self._register_db_lookup_function(allowed_db_tables)
+
+        # Compose prompt and functions via the context composer module
         # dict.fromkeys de-duplicates while preserving order
         node_csv_table_uuids = list(dict.fromkeys(resolved_csv_table_uuids))
         system_prompt = await compose_system_prompt_for_node(
@@ -763,6 +891,7 @@ class PipecatEngine:
             has_recordings=self._has_recordings,
             organization_id=organization_id,
             csv_table_uuids=node_csv_table_uuids,
+            db_table_uuids=node_db_table_uuids,
         )
         functions = await compose_functions_for_node(
             node=node,

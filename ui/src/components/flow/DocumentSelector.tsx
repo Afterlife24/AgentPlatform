@@ -36,7 +36,9 @@ export const DocumentSelector = ({
     const completedDocuments = useMemo(
         () => documents.filter((doc) =>
             doc.processing_status === "completed" &&
-            (filterMode ? doc.retrieval_mode === filterMode : doc.retrieval_mode !== "table")
+            (filterMode
+                ? doc.retrieval_mode === filterMode
+                : doc.retrieval_mode !== "table" && doc.retrieval_mode !== "database")
         ),
         [documents, filterMode]
     );
@@ -58,6 +60,13 @@ export const DocumentSelector = ({
     };
 
     if (completedDocuments.length === 0) {
+        const emptyMessage =
+            filterMode === "database"
+                ? "No database tables available. Upload a CSV with retrieval mode set to 'Table (Relational Database)' first."
+                : filterMode === "table"
+                ? "No CSV tables available. Upload a CSV with retrieval mode set to 'Table' first."
+                : "No documents available. Upload documents to the knowledge base first.";
+
         return (
             <div className="space-y-2">
                 {showLabel && (
@@ -73,7 +82,7 @@ export const DocumentSelector = ({
                 )}
                 <div className="border rounded-md p-4 space-y-3">
                     <div className="text-sm text-muted-foreground text-center">
-                        No documents available. Upload documents to the knowledge base first.
+                        {emptyMessage}
                     </div>
                     <div className="flex justify-center">
                         <Button variant="outline" size="sm" asChild>

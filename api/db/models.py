@@ -1612,3 +1612,12 @@ class CsvTableRowModel(Base):
         Index("ix_csv_table_rows_table_id", "table_id"),
         Index("ix_csv_table_rows_org_id", "organization_id"),
     )
+
+
+# Relational Dataset Tool models
+from api.db.models_relational_dataset import (
+    DbTableModel,
+    DbTableRelationshipModel,
+    DbTableComputedColumnModel,
+    DbTableViewModel,
+)

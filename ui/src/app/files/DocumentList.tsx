@@ -1,8 +1,10 @@
 'use client';
 
-import { FileText, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { Database, FileText, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
+
+import DatabaseTableDetailDialog from './DatabaseTableDetailDialog';
 
 import {
   deleteDocumentApiV1KnowledgeBaseDocumentsDocumentUuidDelete,
@@ -21,6 +23,7 @@ interface DocumentListProps {
 
 export default function DocumentList({ refreshTrigger }: DocumentListProps) {
   const [documents, setDocuments] = useState<DocumentResponseSchema[]>([]);
+  const [selectedDbDoc, setSelectedDbDoc] = useState<DocumentResponseSchema | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -205,6 +208,8 @@ export default function DocumentList({ refreshTrigger }: DocumentListProps) {
                       <Badge variant="outline" className="text-xs">Full Document</Badge>
                     ) : doc.retrieval_mode === 'table' ? (
                       <Badge variant="outline" className="text-xs">Table</Badge>
+                    ) : doc.retrieval_mode === 'database' ? (
+                      <Badge className="bg-indigo-600 text-white hover:bg-indigo-700 text-xs">Table (DB)</Badge>
                     ) : (
                       <Badge variant="outline" className="text-xs">Chunked</Badge>
                     )}
@@ -230,18 +235,37 @@ export default function DocumentList({ refreshTrigger }: DocumentListProps) {
                   )}
                 </div>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => handleDelete(doc.document_uuid, doc.filename)}
-                className="text-destructive hover:text-destructive/90"
-              >
-                <Trash2 className="w-4 h-4" />
-              </Button>
+              <div className="flex items-center gap-2">
+                {doc.retrieval_mode === 'database' && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setSelectedDbDoc(doc)}
+                    className="gap-1.5 text-xs h-8 text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 border-indigo-200 dark:border-indigo-900"
+                  >
+                    <Database className="w-3.5 h-3.5" /> Table Details
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleDelete(doc.document_uuid, doc.filename)}
+                  className="text-destructive hover:text-destructive/90"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+              </div>
             </div>
           ))}
         </div>
       )}
+
+      <DatabaseTableDetailDialog
+        document={selectedDbDoc}
+        open={!!selectedDbDoc}
+        onOpenChange={(open) => !open && setSelectedDbDoc(null)}
+        onTableUpdated={fetchDocuments}
+      />
     </div>
   );
 }

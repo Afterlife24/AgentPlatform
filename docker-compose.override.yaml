@@ -74,10 +74,8 @@ services:
     image: dograh-local/dograh-api:local
     pull_policy: never
     restart: unless-stopped
-    # Mount the local startup script and use it as the entrypoint
+    # Use the local startup script baked into the image at build time
     # (adds --proxy-headers to uvicorn for Twilio signature validation behind nginx)
-    volumes:
-      - ./scripts/start_services_docker_local.sh:/app/scripts/start_services_docker_local.sh:ro
     command: ["./scripts/start_services_docker_local.sh"]
 
   # Same image for the ARQ worker (built once, reused)

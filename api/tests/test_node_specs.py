@@ -233,6 +233,8 @@ def test_all_registered_node_models_inherit_base_node_data():
                 "pre_call_fetch_enabled",
                 "pre_call_fetch_url",
                 "pre_call_fetch_credential_uuid",
+                "csv_table_uuids",
+                "db_table_uuids",
             ],
         ),
         (
@@ -247,6 +249,8 @@ def test_all_registered_node_models_inherit_base_node_data():
                 "extraction_variables",
                 "tool_uuids",
                 "document_uuids",
+                "csv_table_uuids",
+                "db_table_uuids",
             ],
         ),
         (

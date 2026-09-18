@@ -186,6 +186,17 @@ async def process_knowledge_base_document(
             )
             return
 
+        if retrieval_mode == "database":
+            await _process_as_db_table(
+                document_id=document_id,
+                organization_id=organization_id,
+                created_by=document.created_by,
+                temp_file_path=temp_file_path,
+                filename=filename,
+                db_client=db_client,
+            )
+            return
+
         embeddings_provider = None
         embeddings_api_key = None
         embeddings_model = None
@@ -888,4 +899,180 @@ async def _process_as_csv_table(
         await db_client.update_document_status(
             document_id, "failed", error_message=str(e)
         )
+        raise
+
+
+async def _process_as_db_table(
+    *,
+    document_id: int,
+    organization_id: int,
+    created_by: int,
+    temp_file_path: str,
+    filename: str,
+    db_client,
+) -> None:
+    """Process a CSV in 'database' mode into a physical PostgreSQL table.
+
+    Implements Requirement 1, 3, 4, 5, 6, and 17.
+    """
+    from api.db.db_table_client import DbTableClient
+    from api.services.db_tables.identifier_sanitizer import IdentifierSanitizer
+    from api.services.db_tables.loader import TableLoader
+    from api.services.db_tables.prompt_composer import PromptComposer
+    from api.services.db_tables.relation_detector import RelationDetector
+
+    local_db_table_client = DbTableClient()
+
+    logger.info(f"Processing CSV as DB Table for document {document_id}: {filename}")
+
+    # Requirement 1 Criterion 5: Validate .csv extension case-insensitively
+    if not filename.lower().endswith(".csv"):
+        err = "The 'database' retrieval mode accepts only files whose extension is '.csv'."
+        logger.warning(f"Document {document_id} rejected: {err}")
+        await db_client.update_document_status(document_id, "failed", error_message=err)
+        return
+
+    doc = await db_client.get_document_by_id(document_id)
+    if not doc:
+        logger.error(f"Document {document_id} not found")
+        return
+
+    try:
+        with open(temp_file_path, "r", encoding="utf-8-sig", errors="replace") as f:
+            csv_content = f.read()
+
+        # Check existing tables for deduplicating table name
+        existing_tables = await local_db_table_client.list_db_tables(organization_id)
+        existing_names = {t.table_name for t in existing_tables if t.document_uuid != doc.document_uuid}
+
+        # Check if table already exists for this document (Requirement 1 Criterion 12)
+        existing_tbl = await local_db_table_client.get_db_table_by_document_uuid(doc.document_uuid, organization_id)
+        if existing_tbl:
+            table_name = existing_tbl.table_name
+            db_table_record = existing_tbl
+        else:
+            table_name = IdentifierSanitizer.sanitize_table_name(filename, existing_names)
+            db_table_record = await local_db_table_client.create_db_table(
+                document_uuid=doc.document_uuid,
+                organization_id=organization_id,
+                created_by=created_by,
+                table_name=table_name,
+                source_filename=filename,
+            )
+
+        # Execute two-pass transactional load
+        async with local_db_table_client.engine.connect() as conn:
+            trans = await conn.begin()
+            try:
+                load_result = await TableLoader.load_csv_stream(
+                    conn=conn,
+                    organization_id=organization_id,
+                    table_name=table_name,
+                    csv_content=csv_content,
+                    forced_text_columns=db_table_record.forced_text_columns,
+                )
+
+                if load_result["state"] == "failed":
+                    await trans.rollback()
+                    failure_reason = load_result.get("failure_reason", "Load failed")
+                    await local_db_table_client.update_db_table_loaded(
+                        db_table_record.id,
+                        state="failed",
+                        row_count=0,
+                        column_count=0,
+                        column_schema=[],
+                        failure_reason=failure_reason,
+                    )
+                    await db_client.update_document_status(
+                        document_id, "failed", error_message=failure_reason
+                    )
+                    return
+
+                await trans.commit()
+
+                # Update metadata record
+                await local_db_table_client.update_db_table_loaded(
+                    db_table_record.id,
+                    state=load_result["state"],
+                    row_count=load_result["row_count"],
+                    column_count=load_result["column_count"],
+                    column_schema=load_result["column_schema"],
+                    type_report=load_result["type_report"],
+                    load_report=load_result["load_report"],
+                    value_profile=load_result["value_profile"],
+                    suggested_primary_key=load_result["suggested_primary_key"],
+                )
+
+                # Requirement 1 Criterion 9: Link physical table reference into docling_metadata
+                await db_client.update_document_status(
+                    document_id,
+                    "completed",
+                    total_chunks=0,
+                    retrieval_mode="database",
+                    docling_metadata={
+                        "table_name": table_name,
+                        "db_table_uuid": db_table_record.db_table_uuid,
+                        "row_count": load_result["row_count"],
+                        "column_count": load_result["column_count"],
+                        "columns": [c["name"] for c in load_result["column_schema"]],
+                        "suggested_primary_key": load_result["suggested_primary_key"],
+                    },
+                )
+
+                PromptComposer.clear_cache(organization_id)
+                logger.info(
+                    f"DB table processed successfully for document {document_id}: "
+                    f"table={table_name}, state={load_result['state']}, rows={load_result['row_count']}"
+                )
+
+            except Exception as load_err:
+                await trans.rollback()
+                raise load_err
+
+        # Trigger background RelationDetector (Requirement 6 Criterion 1)
+        try:
+            all_loaded_tables = await local_db_table_client.list_db_tables(organization_id)
+            active_tables_meta = [
+                {
+                    "id": t.id,
+                    "table_name": t.table_name,
+                    "row_count": t.row_count,
+                    "column_schema": t.column_schema,
+                    "candidate_keys": [c["name"] for c in t.column_schema if c.get("is_candidate_key")],
+                }
+                for t in all_loaded_tables
+                if t.state in ("loaded", "loaded_degraded")
+            ]
+            if len(active_tables_meta) >= 2:
+                async with local_db_table_client.async_session() as session:
+                    conn = await session.connection()
+                    candidates = await RelationDetector.detect_relationships(
+                        conn=conn,
+                        organization_id=organization_id,
+                        tables_metadata=active_tables_meta,
+                    )
+                    # Save candidates as suggested
+                    for cand in candidates:
+                        try:
+                            await local_db_table_client.create_relationship(
+                                organization_id=organization_id,
+                                source_db_table_id=cand["source_db_table_id"],
+                                source_column=cand["source_column"],
+                                target_db_table_id=cand["target_db_table_id"],
+                                target_column=cand["target_column"],
+                                cardinality=cand["cardinality"],
+                                state="suggested",
+                                containment_ratio=cand["containment_ratio"],
+                                distinct_source_count=cand["distinct_source_count"],
+                                absent_source_count=cand["absent_source_count"],
+                                name_similarity_score=cand["name_similarity_score"],
+                            )
+                        except Exception:
+                            pass  # Ignore duplicate relationship constraint violation
+        except Exception as det_err:
+            logger.warning(f"Background relation detection failed for org={organization_id}: {det_err}")
+
+    except Exception as e:
+        logger.exception(f"DB Table processing failed for document {document_id}: {e}")
+        await db_client.update_document_status(document_id, "failed", error_message=str(e))
         raise

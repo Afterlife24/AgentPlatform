@@ -34,7 +34,8 @@ class ProcessDocumentRequestSchema(BaseModel):
         description=(
             "Retrieval mode: 'chunked' for vector search, "
             "'full_document' for full text retrieval, "
-            "'table' for CSV table — parses CSV rows into a queryable Postgres table"
+            "'table' for CSV table — parses CSV rows into a queryable Postgres table, "
+            "'database' for Relational Dataset — loads CSV into physical typed PostgreSQL table"
         ),
     )
 

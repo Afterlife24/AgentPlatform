@@ -79,7 +79,7 @@ export default function FilesPage() {
             </Card>
 
             <Dialog open={isUploadOpen} onOpenChange={setIsUploadOpen}>
-                <DialogContent>
+                <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
                         <DialogTitle>Upload Document</DialogTitle>
                         <DialogDescription>

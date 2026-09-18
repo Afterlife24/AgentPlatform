@@ -32,13 +32,14 @@ export default function DocumentUpload({ onUploadSuccess }: DocumentUploadProps)
   const [uploadProgress, setUploadProgress] = useState(0);
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const isCsv = selectedFile ? selectedFile.name.toLowerCase().endsWith('.csv') : false;
 
   const ossNotice = isOSS ? (
-    <div className="flex gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/50 dark:bg-amber-950/30">
+    <div className="flex gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/50 dark:bg-amber-950/30 w-full min-w-0">
       <Info className="h-4 w-4 flex-shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
-      <div className="text-xs text-amber-900 dark:text-amber-200">
+      <div className="text-xs text-amber-900 dark:text-amber-200 flex-1 min-w-0">
         <p className="font-medium">Processed by an external service</p>
-        <p className="mt-1">
+        <p className="mt-1 break-words">
           Uploaded documents are sent to Afterlife&apos;s managed Model Proxy Service for
           parsing and chunking. Afterlife Model Proxy Service does not store or read your documents -
           the extracted text and embeddings are returned and stored locally in your
@@ -88,6 +89,11 @@ export default function DocumentUpload({ onUploadSuccess }: DocumentUploadProps)
 
   const uploadFile = async () => {
     if (!selectedFile) return;
+
+    if ((retrievalMode === 'table' || retrievalMode === 'database') && !isCsv) {
+      toast.error('Table mode requires a CSV file');
+      return;
+    }
 
     setUploading(true);
     setUploadProgress(0);
@@ -186,36 +192,36 @@ export default function DocumentUpload({ onUploadSuccess }: DocumentUploadProps)
   // Step 2: File selected — show retrieval mode choice
   if (selectedFile && !uploading) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-4 w-full min-w-0">
         {ossNotice}
         {/* Selected file info */}
-        <div className="flex items-center gap-3 p-3 border rounded-lg bg-muted/30">
-          <FileText className="w-8 h-8 text-primary flex-shrink-0" />
-          <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-3 p-3 border rounded-lg bg-muted/30 w-full min-w-0">
+          <FileText className="w-8 h-8 text-primary shrink-0" />
+          <div className="flex-1 min-w-0 overflow-hidden">
             <p className="font-medium truncate">{selectedFile.name}</p>
             <p className="text-xs text-muted-foreground">
               {(selectedFile.size / 1024).toFixed(1)} KB
             </p>
           </div>
-          <Button variant="ghost" size="icon" onClick={clearSelectedFile}>
+          <Button variant="ghost" size="icon" onClick={clearSelectedFile} className="shrink-0">
             <X className="w-4 h-4" />
           </Button>
         </div>
 
         {/* Retrieval mode selection */}
-        <div className="space-y-3">
+        <div className="space-y-3 w-full min-w-0">
           <Label className="text-sm font-medium">How should the agent use this document?</Label>
-          <RadioGroup value={retrievalMode} onValueChange={setRetrievalMode}>
+          <RadioGroup value={retrievalMode} onValueChange={setRetrievalMode} className="space-y-2 w-full min-w-0">
             <label
               htmlFor="full_document"
-              className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
+              className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors w-full min-w-0 ${
                 retrievalMode === 'full_document' ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'
               }`}
             >
-              <RadioGroupItem value="full_document" id="full_document" className="mt-0.5" />
-              <div>
+              <RadioGroupItem value="full_document" id="full_document" className="mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0">
                 <p className="font-medium text-sm">Full Document</p>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-muted-foreground break-words">
                   The entire document is provided to the agent on each retrieval.
                   Best for menus, price lists, FAQs, and other small reference documents.
                 </p>
@@ -223,14 +229,14 @@ export default function DocumentUpload({ onUploadSuccess }: DocumentUploadProps)
             </label>
             <label
               htmlFor="chunked"
-              className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
+              className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors w-full min-w-0 ${
                 retrievalMode === 'chunked' ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'
               }`}
             >
-              <RadioGroupItem value="chunked" id="chunked" className="mt-0.5" />
-              <div>
+              <RadioGroupItem value="chunked" id="chunked" className="mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0">
                 <p className="font-medium text-sm">Chunked Search</p>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-muted-foreground break-words">
                   The document is split into chunks and the most relevant ones are retrieved.
                   Better for large documents like manuals or policies.
                 </p>
@@ -238,20 +244,42 @@ export default function DocumentUpload({ onUploadSuccess }: DocumentUploadProps)
             </label>
             <label
               htmlFor="table"
-              className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
+              className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors w-full min-w-0 ${
+                !isCsv ? 'opacity-50 pointer-events-none cursor-not-allowed' : ''
+              } ${
                 retrievalMode === 'table' ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'
               }`}
             >
-              <RadioGroupItem value="table" id="table" className="mt-0.5" />
-              <div>
+              <RadioGroupItem value="table" id="table" className="mt-0.5 shrink-0" disabled={!isCsv} />
+              <div className="flex-1 min-w-0">
                 <p className="font-medium text-sm">
                   Table{' '}
                   <span className="text-xs font-normal text-muted-foreground">(CSV only)</span>
                 </p>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-xs text-muted-foreground break-words">
                   The CSV is stored as a queryable data table. The agent can filter, sort, and
                   aggregate rows using natural language — ideal for equipment specs, product
                   catalogues, price lists with numeric data.
+                </p>
+              </div>
+            </label>
+            <label
+              htmlFor="database"
+              className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors w-full min-w-0 ${
+                !isCsv ? 'opacity-50 pointer-events-none cursor-not-allowed' : ''
+              } ${
+                retrievalMode === 'database' ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'
+              }`}
+            >
+              <RadioGroupItem value="database" id="database" className="mt-0.5 shrink-0" disabled={!isCsv} />
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-sm">
+                  Table (Relational Database){' '}
+                  <span className="text-xs font-normal text-muted-foreground">(CSV only)</span>
+                </p>
+                <p className="text-xs text-muted-foreground break-words">
+                  Loads the CSV into a physical PostgreSQL table with multi-table relationships,
+                  views, computed columns, candidate keys, and value profiles. The agent queries it via direct PostgreSQL SELECT statements.
                 </p>
               </div>
             </label>
@@ -267,7 +295,7 @@ export default function DocumentUpload({ onUploadSuccess }: DocumentUploadProps)
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 w-full min-w-0">
       {ossNotice}
       <input
         ref={fileInputRef}

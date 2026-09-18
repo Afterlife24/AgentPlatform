@@ -462,15 +462,17 @@ function DocumentRefsWidget({
     documents,
     allDocuments,
 }: WidgetProps & { documents: DocumentResponseSchema[]; allDocuments?: DocumentResponseSchema[] }) {
-    const isCsvTable = spec.display_name === "CSV Tables";
+    const isCsvTable = spec.display_name === "CSV Tables" || spec.name === "csv_table_uuids";
+    const isDbTable = spec.display_name === "Database Tables" || spec.name === "db_table_uuids";
+    const filterMode = isDbTable ? "database" : isCsvTable ? "table" : undefined;
     return (
         <DocumentSelector
             value={(value as string[] | undefined) ?? []}
             onChange={onChange}
-            documents={isCsvTable ? (allDocuments ?? documents) : documents}
+            documents={isCsvTable || isDbTable ? (allDocuments ?? documents) : documents}
             label={spec.display_name}
             description={spec.description}
-            filterMode={isCsvTable ? "table" : undefined}
+            filterMode={filterMode}
         />
     );
 }

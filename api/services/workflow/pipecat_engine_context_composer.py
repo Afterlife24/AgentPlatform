@@ -20,6 +20,10 @@ from api.services.workflow.tools.csv_table import (
     render_value_profile,
 )
 from api.services.workflow.tools.csv_sql_executor import get_csv_sql_tool
+from api.services.workflow.tools.db_table import (
+    get_db_lookup_tool,
+    get_db_sql_tool,
+)
 from api.db import db_client
 
 # ---------------------------------------------------------------------------
@@ -63,11 +67,13 @@ async def compose_system_prompt_for_node(
     has_recordings: bool,
     organization_id: Optional[int] = None,
     csv_table_uuids: Optional[list[str]] = None,
+    db_table_uuids: Optional[list[str]] = None,
 ) -> str:
     """Compose the full system prompt text for a workflow node.
 
     Combines the global prompt, node-specific prompt, the auto-injected
-    value profile (when the node has CSV tables attached), and (when
+    value profile (when the node has CSV tables attached), the database
+    schema block (when the node has DB tables attached), and (when
     recordings are enabled) the recording response mode instructions.
 
     Args:
@@ -75,9 +81,10 @@ async def compose_system_prompt_for_node(
         workflow: The full workflow graph (needed for global node prompt).
         format_prompt: Callable to render template variables in prompts.
         has_recordings: Whether any node in the workflow uses recordings.
-        organization_id: Tenant scope for the value-profile lookup.
+        organization_id: Tenant scope for the value-profile / schema lookup.
         csv_table_uuids: Already-resolved csv_tables.table_uuid values for
             this node — resolution stays in the engine so it is not duplicated.
+        db_table_uuids: Already-resolved database table document UUIDs or names.
 
     Returns:
         The composed system prompt text.
@@ -113,6 +120,70 @@ async def compose_system_prompt_for_node(
                 f"🧩 [Composer] compose_system_prompt_for_node | "
                 f"value profile resolved to empty — LLM will not see column values"
             )
+
+    # Relational Database Schema Block + Value Profile injection
+    if organization_id and db_table_uuids:
+        logger.info(
+            f"🧩 [Composer] compose_system_prompt_for_node | "
+            f"node={node.id if hasattr(node,'id') else 'unknown'} "
+            f"org={organization_id} db_table_uuids={db_table_uuids} — injecting schema block"
+        )
+        try:
+            from api.db.db_table_client import db_table_client
+            from api.services.db_tables.prompt_composer import PromptComposer
+
+            tables_data = []
+            table_ids = []
+            for uid in db_table_uuids:
+                tbl = await db_table_client.get_db_table_by_document_uuid(uid, organization_id)
+                if not tbl:
+                    tbl = await db_table_client.get_db_table_by_name(uid, organization_id)
+                if tbl and tbl.state in ("loaded", "loaded_degraded"):
+                    tables_data.append({
+                        "table_name": tbl.table_name,
+                        "row_count": tbl.row_count,
+                        "confirmed_primary_key": tbl.confirmed_primary_key,
+                        "suggested_primary_key": tbl.suggested_primary_key,
+                        "column_schema": tbl.column_schema or [],
+                        "value_profile": tbl.value_profile or [],
+                    })
+                    table_ids.append(tbl.id)
+
+            views_data = []
+            relationships_data = []
+            if table_ids:
+                rels = await db_table_client.list_relationships(organization_id, status="accepted")
+                for r in rels:
+                    if r.source_table_id in table_ids or r.target_table_id in table_ids:
+                        relationships_data.append({
+                            "source_table_name": r.source_table_name,
+                            "source_column": r.source_column,
+                            "target_table_name": r.target_table_name,
+                            "target_column": r.target_column,
+                            "cardinality": r.cardinality,
+                        })
+                for tid in table_ids:
+                    vws = await db_table_client.list_views(tid, organization_id)
+                    for v in vws:
+                        views_data.append({
+                            "view_name": v.view_name,
+                            "rules": v.rules or [],
+                        })
+
+            if tables_data:
+                schema_block = PromptComposer.compose_schema_block(
+                    organization_id=organization_id,
+                    tables_data=tables_data,
+                    views_data=views_data,
+                    relationships=relationships_data,
+                )
+                if schema_block:
+                    parts.append(schema_block)
+                    logger.info(
+                        f"🧩 [Composer] Schema block injected: {len(tables_data)} tables, {len(schema_block)} chars"
+                    )
+        except Exception as e:
+            logger.warning(f"🧩 [Composer] Failed to inject database schema block: {e}")
 
     if has_recordings and "RECORDING_ID:" in formatted_node_prompt:
         parts.append(RECORDING_RESPONSE_MODE_INSTRUCTIONS)
@@ -163,6 +234,7 @@ async def compose_functions_for_node(
     if node.document_uuids:
         rag_doc_uuids = []
         csv_table_uuids_from_docs = []
+        db_table_uuids_from_docs = []
         if organization_id:
             try:
                 for doc_uuid in node.document_uuids:
@@ -176,6 +248,8 @@ async def compose_functions_for_node(
                         t_uuid = meta.get("table_uuid")
                         if t_uuid:
                             csv_table_uuids_from_docs.append(t_uuid)
+                    elif rows and rows[0].get("retrieval_mode") == "database":
+                        db_table_uuids_from_docs.append(doc_uuid)
                     else:
                         rag_doc_uuids.append(doc_uuid)
             except Exception:
@@ -210,6 +284,37 @@ async def compose_functions_for_node(
                 csv_sql_def["function"]["description"],
                 properties=csv_sql_def["function"]["parameters"].get("properties", {}),
                 required=csv_sql_def["function"]["parameters"].get("required", []),
+            ))
+
+        # Database-mode documents — register execute_db_sql and lookup_db_column_values
+        if db_table_uuids_from_docs:
+            allowed_relations = []
+            if organization_id:
+                try:
+                    from api.db.db_table_client import db_table_client
+                    for doc_uuid in db_table_uuids_from_docs:
+                        tbl = await db_table_client.get_db_table_by_document_uuid(doc_uuid, organization_id)
+                        if tbl:
+                            allowed_relations.append(tbl.table_name)
+                            views = await db_table_client.list_views(tbl.id, organization_id)
+                            for v in views:
+                                allowed_relations.append(v.view_name)
+                except Exception as e:
+                    logger.warning(f"Could not resolve allowed relations: {e}")
+
+            db_sql_def = get_db_sql_tool(allowed_relations)
+            functions.append(get_function_schema(
+                db_sql_def["function"]["name"],
+                db_sql_def["function"]["description"],
+                properties=db_sql_def["function"]["parameters"].get("properties", {}),
+                required=db_sql_def["function"]["parameters"].get("required", []),
+            ))
+            db_lookup_def = get_db_lookup_tool(allowed_relations)
+            functions.append(get_function_schema(
+                db_lookup_def["function"]["name"],
+                db_lookup_def["function"]["description"],
+                properties=db_lookup_def["function"]["parameters"].get("properties", {}),
+                required=db_lookup_def["function"]["parameters"].get("required", []),
             ))
 
     # CSV Tables section — execute_csv_sql only
@@ -256,6 +361,40 @@ async def compose_functions_for_node(
             required=csv_sql_def["function"]["parameters"].get("required", []),
         )
         functions.append(csv_sql_schema)
+
+    # Database Tables section — execute_db_sql and lookup_db_column_values
+    node_db_table_uuids = getattr(node, "db_table_uuids", None)
+    if node_db_table_uuids:
+        allowed_relations = []
+        if organization_id:
+            try:
+                from api.db.db_table_client import db_table_client
+                for doc_uuid in node_db_table_uuids:
+                    tbl = await db_table_client.get_db_table_by_document_uuid(doc_uuid, organization_id)
+                    if not tbl:
+                        tbl = await db_table_client.get_db_table_by_name(doc_uuid, organization_id)
+                    if tbl:
+                        allowed_relations.append(tbl.table_name)
+                        views = await db_table_client.list_views(tbl.id, organization_id)
+                        for v in views:
+                            allowed_relations.append(v.view_name)
+            except Exception as e:
+                logger.warning(f"Could not resolve allowed relations for db_table_uuids: {e}")
+
+        db_sql_def = get_db_sql_tool(allowed_relations)
+        functions.append(get_function_schema(
+            db_sql_def["function"]["name"],
+            db_sql_def["function"]["description"],
+            properties=db_sql_def["function"]["parameters"].get("properties", {}),
+            required=db_sql_def["function"]["parameters"].get("required", []),
+        ))
+        db_lookup_def = get_db_lookup_tool(allowed_relations)
+        functions.append(get_function_schema(
+            db_lookup_def["function"]["name"],
+            db_lookup_def["function"]["description"],
+            properties=db_lookup_def["function"]["parameters"].get("properties", {}),
+            required=db_lookup_def["function"]["parameters"].get("required", []),
+        ))
 
     # Custom tools
     if node.tool_uuids and custom_tool_manager:

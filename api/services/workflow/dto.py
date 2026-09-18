@@ -178,6 +178,14 @@ class _ToolDocumentRefsMixin(BaseModel):
         description="CSV tables this node can query using the query_csv_table tool.",
         llm_hint="List of CSV table UUIDs from `list_csv_tables`.",
     )
+    db_table_uuids: Optional[List[str]] = spec_field(
+        default=None,
+        ui_type=PropertyType.document_refs,
+        display_name="Database Tables",
+        description="Database tables this node can query using execute_db_sql.",
+        llm_hint="List of document UUIDs for database tables.",
+    )
+
 
 
 @node_spec(
@@ -224,6 +232,8 @@ class _ToolDocumentRefsMixin(BaseModel):
         "extraction_variables",
         "tool_uuids",
         "document_uuids",
+        "csv_table_uuids",
+        "db_table_uuids",
         "pre_call_fetch_enabled",
         "pre_call_fetch_url",
         "pre_call_fetch_credential_uuid",
@@ -398,6 +408,8 @@ class StartCallNodeData(
         "extraction_variables",
         "tool_uuids",
         "document_uuids",
+        "csv_table_uuids",
+        "db_table_uuids",
     ),
     field_overrides={
         "name": {

@@ -35,7 +35,7 @@ trap shutdown TERM INT
 start() {
   local name=$1
   shift
-  echo "→ Starting $name"
+  echo "-> Starting $name"
   "$@" &
   pids+=($!)
   echo "  $name PID $!"

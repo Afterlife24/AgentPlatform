@@ -151,12 +151,34 @@ COPY --chown=dograh:dograh ./api ./api
 #     with the command:[] entries in deploy/helm/dograh/templates/*.yaml.
 COPY --chown=dograh:dograh \
      ./scripts/start_services_docker.sh \
+     ./scripts/start_services_docker_local.sh \
      ./scripts/run_migrate.sh \
      ./scripts/run_web.sh \
      ./scripts/run_arq_worker.sh \
      ./scripts/run_ari_manager.sh \
      ./scripts/run_campaign_orchestrator.sh \
      ./scripts/
+
+# Strip Windows CRLF line endings and UTF-8 BOM from all entrypoint scripts
+# so they execute correctly on Linux regardless of how they were checked out.
+RUN for f in \
+      ./scripts/start_services_docker.sh \
+      ./scripts/start_services_docker_local.sh \
+      ./scripts/run_migrate.sh \
+      ./scripts/run_web.sh \
+      ./scripts/run_arq_worker.sh \
+      ./scripts/run_ari_manager.sh \
+      ./scripts/run_campaign_orchestrator.sh; do \
+    sed -i 's/\r//' "$f" && sed -i '1s/^\xEF\xBB\xBF//' "$f"; \
+  done && \
+  chmod +x \
+    ./scripts/start_services_docker.sh \
+    ./scripts/start_services_docker_local.sh \
+    ./scripts/run_migrate.sh \
+    ./scripts/run_web.sh \
+    ./scripts/run_arq_worker.sh \
+    ./scripts/run_ari_manager.sh \
+    ./scripts/run_campaign_orchestrator.sh
 
 # ts_validator Node deps (built in ts-deps stage with full node:22-slim image).
 # The validator runs as a short-lived subprocess from api/mcp_server/ts_bridge.py.
