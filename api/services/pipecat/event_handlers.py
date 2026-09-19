@@ -357,6 +357,11 @@ def register_event_handlers(
             "call_duration_seconds", 0
         )
 
+        # Embedding tokens (from RAG retrieval calls during the session)
+        call_completed_properties["embedding_tokens"] = usage_info.get(
+            "embedding_tokens", 0
+        )
+
         # --- gathered_context: disposition, tags, trace url, etc. ---
         for ctx_key, ctx_value in (gathered_context or {}).items():
             # Skip large/nested objects that aren't useful as PostHog properties

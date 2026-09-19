@@ -308,7 +308,7 @@ export default function BillingPage() {
                         </CardTitle>
                     </CardHeader>
                     <CardContent>
-                        <p className="text-sm text-muted-foreground">1 credit = 1 cent</p>
+                        {/* <p className="text-sm text-muted-foreground">1000 Tokens = 1 credit</p> */}
                     </CardContent>
                 </Card>
 

@@ -89,12 +89,25 @@ class AzureOpenAIEmbeddingService(BaseEmbeddingService):
                 input=texts,
                 model=self.model_id,
             )
+            # Capture token usage reported by the API for billing tracking.
+            usage = getattr(response, "usage", None)
+            self._last_embedding_tokens: int = int(
+                getattr(usage, "total_tokens", 0) or 0
+            )
             embeddings = [item.embedding for item in response.data]
             self._validate_embedding_dimensions(embeddings)
             return embeddings
         except Exception as e:
             logger.error(f"Error generating Azure OpenAI embeddings: {e}")
             raise
+
+    def get_last_embedding_tokens(self) -> int:
+        """Return token count from the most recent embed_texts call.
+
+        Returns the value reported by the Azure OpenAI API.
+        Returns 0 if no call has been made yet or usage was not reported.
+        """
+        return getattr(self, "_last_embedding_tokens", 0)
 
     def _validate_embedding_dimensions(self, embeddings: List[List[float]]) -> None:
         for embedding in embeddings:

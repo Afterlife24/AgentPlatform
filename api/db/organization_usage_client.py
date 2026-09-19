@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from loguru import logger
+
 from dateutil.relativedelta import relativedelta
 from sqlalchemy import Date, and_, cast, func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -18,9 +20,16 @@ from api.db.models import (
     WorkflowModel,
     WorkflowRunModel,
 )
+
 from api.enums import OrganizationConfigurationKey, UserConfigurationKey
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
 from api.utils.recording_artifacts import get_recording_storage_key
+
+# OSS billing constants
+# 1000 LLM tokens = 1 credit = 1 cent
+OSS_TOKENS_PER_CREDIT = 1000
+# Default quota in credits when OrganizationModel.quota_dograh_tokens is 0 or not set
+OSS_DEFAULT_QUOTA_CREDITS = 500
 
 
 class OrganizationUsageClient(BaseDBClient):
@@ -124,6 +133,171 @@ class OrganizationUsageClient(BaseDBClient):
                 result["price_per_second_usd"] = org.price_per_second_usd
 
             return result
+
+    async def get_oss_billing_credits(self, organization_id: int) -> dict:
+        """Return billing credit totals for OSS mode from the local database.
+
+        Credits are accumulated in ``OrganizationUsageCycleModel.used_dograh_tokens``
+        by ``add_oss_llm_token_usage`` after every completed call.  The quota
+        ceiling is read from ``OrganizationModel.quota_dograh_tokens``; when that
+        field is zero or unset the ``OSS_DEFAULT_QUOTA_CREDITS`` constant is used.
+
+        Returns a dict with keys:
+            total_credits_used  – credits spent in the current period
+            remaining_credits   – quota minus used, floored at 0
+            total_quota         – configured quota in credits
+        """
+        async with self.async_session() as session:
+            org_result = await session.execute(
+                select(OrganizationModel).where(OrganizationModel.id == organization_id)
+            )
+            org = org_result.scalar_one_or_none()
+            total_quota = (
+                float(org.quota_dograh_tokens)
+                if org and org.quota_dograh_tokens
+                else float(OSS_DEFAULT_QUOTA_CREDITS)
+            )
+
+            cycle = await self._get_or_create_current_cycle_impl(
+                organization_id, session, commit=False
+            )
+            used = float(cycle.used_dograh_tokens or 0.0)
+            remaining = max(0.0, total_quota - used)
+
+            return {
+                "total_credits_used": used,
+                "remaining_credits": remaining,
+                "total_quota": total_quota,
+            }
+
+    async def add_oss_llm_token_usage(
+        self, organization_id: int, llm_tokens: int
+    ) -> None:
+        """Increment the current cycle's used credits for an OSS deployment.
+
+        Converts raw LLM token count to credits using OSS_TOKENS_PER_CREDIT
+        (1000 tokens = 1 credit) and atomically adds to the cycle row.
+        """
+        if llm_tokens <= 0:
+            return
+
+        credits_to_add = llm_tokens / OSS_TOKENS_PER_CREDIT
+
+        async with self.async_session() as session:
+            # Ensure the cycle row exists first
+            await self._get_or_create_current_cycle_impl(
+                organization_id, session, commit=True
+            )
+
+            # Atomic increment so concurrent calls don't clobber each other
+            period_start, period_end = self._calculate_current_period()
+            await session.execute(
+                OrganizationUsageCycleModel.__table__.update()
+                .where(
+                    and_(
+                        OrganizationUsageCycleModel.organization_id == organization_id,
+                        OrganizationUsageCycleModel.period_start == period_start,
+                        OrganizationUsageCycleModel.period_end == period_end,
+                    )
+                )
+                .values(
+                    used_dograh_tokens=OrganizationUsageCycleModel.used_dograh_tokens
+                    + credits_to_add,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            await session.commit()
+
+    async def add_oss_call_credits(
+        self, organization_id: int, credits_to_add: float
+    ) -> None:
+        """Increment the current cycle's used credits with a pre-calculated value.
+
+        Called after each completed call using the platform billing formula:
+            credits = (
+                (prompt_tokens   * 0.15 / 1M) +
+                (completion_tokens * 0.60 / 1M) +
+                (embedding_tokens  * 0.02 / 1M)
+            ) * 1.2 * 100
+        The caller (workflow_run_billing.py) computes the value; this method
+        just writes it atomically to the billing cycle row.
+        """
+        if credits_to_add <= 0:
+            return
+
+        async with self.async_session() as session:
+            # Ensure the cycle row exists first
+            await self._get_or_create_current_cycle_impl(
+                organization_id, session, commit=True
+            )
+
+            # Atomic increment so concurrent calls don't clobber each other
+            period_start, period_end = self._calculate_current_period()
+            await session.execute(
+                OrganizationUsageCycleModel.__table__.update()
+                .where(
+                    and_(
+                        OrganizationUsageCycleModel.organization_id == organization_id,
+                        OrganizationUsageCycleModel.period_start == period_start,
+                        OrganizationUsageCycleModel.period_end == period_end,
+                    )
+                )
+                .values(
+                    used_dograh_tokens=OrganizationUsageCycleModel.used_dograh_tokens
+                    + credits_to_add,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            await session.commit()
+
+    async def add_oss_kb_embed_token_usage(
+        self, organization_id: int, embed_tokens: int
+    ) -> None:
+        """Increment the current cycle's used credits for knowledge base ingestion.
+
+        Called immediately after document chunking completes so that embedding
+        costs from file uploads are billed right away — independent of any call.
+
+        Formula: credits = (embed_tokens / 1_000_000) * 0.02 * 1.2
+          - $0.02 per 1M tokens (text-embedding-3-small)
+          - 1.2x markup (20% platform margin)
+          - 1 credit = 1 cent, so multiply dollar cost by 100
+        """
+        if embed_tokens <= 0:
+            return
+
+        # Convert embed tokens to credits (1 credit = 1 cent)
+        credits_to_add = (embed_tokens / 1_000_000) * 0.02 * 1.2 * 100
+
+        async with self.async_session() as session:
+            # Ensure the cycle row exists first
+            await self._get_or_create_current_cycle_impl(
+                organization_id, session, commit=True
+            )
+
+            # Atomic increment so concurrent uploads don't clobber each other
+            period_start, period_end = self._calculate_current_period()
+            await session.execute(
+                OrganizationUsageCycleModel.__table__.update()
+                .where(
+                    and_(
+                        OrganizationUsageCycleModel.organization_id == organization_id,
+                        OrganizationUsageCycleModel.period_start == period_start,
+                        OrganizationUsageCycleModel.period_end == period_end,
+                    )
+                )
+                .values(
+                    used_dograh_tokens=OrganizationUsageCycleModel.used_dograh_tokens
+                    + credits_to_add,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            await session.commit()
+
+        logger.info(
+            f"Billed {embed_tokens} KB ingestion embed tokens → "
+            f"{credits_to_add:.6f} credits for org {organization_id}"
+        )
 
     async def get_usage_history(
         self,

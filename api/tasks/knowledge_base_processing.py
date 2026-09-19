@@ -15,8 +15,10 @@ from loguru import logger
 
 from api.db import db_client
 from api.db.models import KnowledgeBaseChunkModel
+from api.enums import PostHogEvent
 from api.services.gen_ai import build_embedding_service
 from api.services.mps_service_key_client import mps_service_key_client
+from api.services.posthog_client import capture_event
 from api.services.storage import storage_fs
 from api.services.workflow.tools.chunk_contextualiser import contextualise_chunks
 from api.services.workflow.tools.csv_table import (
@@ -38,8 +40,13 @@ async def _embed_texts_in_batches(
     texts: list[str],
     batch_size: int = EMBEDDING_BATCH_SIZE,
     concurrency: int = EMBEDDING_CONCURRENCY,
-) -> list[list[float]]:
-    """Generate embeddings in bounded batches with concurrent requests."""
+) -> tuple[list[list[float]], int]:
+    """Generate embeddings in bounded batches with concurrent requests.
+
+    Returns:
+        A tuple of (embeddings, total_embed_tokens) where total_embed_tokens
+        is the sum of tokens consumed across all batches — used for billing.
+    """
     import asyncio
 
     batches = [
@@ -49,6 +56,8 @@ async def _embed_texts_in_batches(
 
     # Pre-allocate result slots to maintain order
     results: list[list[list[float]] | None] = [None] * len(batches)
+    # Track tokens per batch slot so concurrent writes don't race
+    token_counts: list[int] = [0] * len(batches)
     semaphore = asyncio.Semaphore(concurrency)
 
     async def _process_batch(index: int, batch: list[str]):
@@ -57,6 +66,7 @@ async def _embed_texts_in_batches(
                 f"Generating embedding batch {index + 1}/{len(batches)} ({len(batch)} texts)"
             )
             results[index] = await embedding_service.embed_texts(batch)
+            token_counts[index] = embedding_service.get_last_embedding_tokens()
 
     # Run all batches concurrently (bounded by semaphore)
     await asyncio.gather(*[
@@ -68,7 +78,9 @@ async def _embed_texts_in_batches(
     for result in results:
         if result is not None:
             embeddings.extend(result)
-    return embeddings
+
+    total_embed_tokens = sum(token_counts)
+    return embeddings, total_embed_tokens
 
 
 async def process_knowledge_base_document(
@@ -377,7 +389,7 @@ async def process_knowledge_base_document(
             f"Generating embeddings for {len(chunk_texts)} chunks "
             f"using {embedding_service.get_model_id()}"
         )
-        embeddings = await _embed_texts_in_batches(embedding_service, chunk_texts)
+        embeddings, total_embed_tokens = await _embed_texts_in_batches(embedding_service, chunk_texts)
         if len(embeddings) != len(chunk_records):
             raise ValueError(
                 "Embedding count mismatch: "
@@ -398,6 +410,36 @@ async def process_knowledge_base_document(
             "completed",
             total_chunks=len(chunk_records),
             docling_metadata=docling_metadata,
+        )
+
+        # Bill embedding tokens consumed during ingestion immediately —
+        # this is independent of any call, so billing updates right away.
+        if total_embed_tokens > 0:
+            logger.info(
+                f"Document {document_id}: billing {total_embed_tokens} ingestion "
+                f"embed tokens for org {organization_id}"
+            )
+            await db_client.add_oss_kb_embed_token_usage(
+                organization_id=organization_id,
+                embed_tokens=total_embed_tokens,
+            )
+
+        # Fire PostHog event so ingestion token usage is visible in analytics.
+        # Uses created_by_provider_id as the distinct_id (same pattern as
+        # KNOWLEDGE_BASE_CREATED fired in the route handler).
+        credits_used = round((total_embed_tokens / 1_000_000) * 0.02 * 1.2 * 100, 6)
+        capture_event(
+            distinct_id=created_by_provider_id,
+            event=PostHogEvent.KNOWLEDGE_BASE_CHUNKED,
+            properties={
+                "document_id": document_id,
+                "organization_id": organization_id,
+                "filename": filename,
+                "total_chunks": len(chunk_records),
+                "embedding_tokens": total_embed_tokens,
+                "embedding_model": embedding_service.get_model_id(),
+                "credits_used": credits_used,
+            },
         )
 
         logger.info(

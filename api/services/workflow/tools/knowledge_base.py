@@ -237,7 +237,7 @@ async def _perform_retrieval(
 
         # Nothing left to search with vector/BM25
         if chunked_uuids is not None and len(chunked_uuids) == 0:
-            return {"chunks": chunks, "query": query, "total_results": len(chunks), "route": "full_document"}
+            return {"chunks": chunks, "query": query, "total_results": len(chunks), "route": "full_document", "embedding_tokens": 0}
 
         if not embeddings_api_key:
             raise ValueError(
@@ -266,6 +266,7 @@ async def _perform_retrieval(
                 "query": query,
                 "total_results": 0,
                 "route": RAGRoute.OUT_OF_SCOPE.value,
+                "embedding_tokens": 0,
             }
 
         # ------------------------------------------------------------------
@@ -306,9 +307,14 @@ async def _perform_retrieval(
         # ------------------------------------------------------------------
         fetch_k = limit
 
+        # Accumulate embedding tokens across all query variants for billing.
+        _total_embedding_tokens: int = 0
+
         async def _hybrid_for_query(q: str) -> List[dict]:
+            nonlocal _total_embedding_tokens
             try:
                 q_embedding = await embedding_service.embed_query(q)
+                _total_embedding_tokens += embedding_service.get_last_embedding_tokens()
                 return await db_client.hybrid_search_chunks(
                     query_embedding=q_embedding,
                     query=q,
@@ -321,6 +327,7 @@ async def _perform_retrieval(
                 logger.warning("Hybrid search failed for variant '{}': {}", q[:40], exc)
                 try:
                     q_embedding = await embedding_service.embed_query(q)
+                    _total_embedding_tokens += embedding_service.get_last_embedding_tokens()
                     return await db_client.search_similar_chunks(
                         query_embedding=q_embedding,
                         organization_id=organization_id,
@@ -474,6 +481,7 @@ async def _perform_retrieval(
             "query": query,
             "total_results": len(chunks),
             "route": rag_route.value,
+            "embedding_tokens": _total_embedding_tokens,
         }
 
     except Exception as e:
@@ -483,6 +491,7 @@ async def _perform_retrieval(
             "chunks": [],
             "query": query,
             "total_results": 0,
+            "embedding_tokens": 0,
         }
 
 

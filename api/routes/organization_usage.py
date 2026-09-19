@@ -164,16 +164,21 @@ async def get_current_period_usage(user: UserModel = Depends(get_user)):
 
 @router.get("/usage/mps-credits", response_model=MPSCreditsResponse)
 async def get_mps_credits(user: UserModel = Depends(get_user)):
-    """Get aggregated usage and quota from MPS.
+    """Get aggregated usage and quota.
 
-    OSS users: queries by provider_id (created_by).
-    Hosted users: queries by organization_id.
+    OSS mode: reads from local DB (accumulated LLM token usage).
+    Hosted mode: queries MPS by organization_id.
     """
     try:
         if DEPLOYMENT_MODE == "oss":
-            usage = await mps_service_key_client.get_usage_by_created_by(
-                str(user.provider_id)
-            )
+            organization_id = user.selected_organization_id
+            if not organization_id:
+                return MPSCreditsResponse(
+                    total_credits_used=0.0,
+                    remaining_credits=0.0,
+                    total_quota=0.0,
+                )
+            usage = await db_client.get_oss_billing_credits(organization_id)
         else:
             if not user.selected_organization_id:
                 raise HTTPException(status_code=400, detail="No organization selected")
@@ -183,11 +188,12 @@ async def get_mps_credits(user: UserModel = Depends(get_user)):
 
         total_used = usage.get("total_credits_used", 0.0)
         total_remaining = usage.get("remaining_credits", 0.0)
+        total_quota = usage.get("total_quota", total_used + total_remaining)
 
         return MPSCreditsResponse(
             total_credits_used=total_used,
             remaining_credits=total_remaining,
-            total_quota=total_used + total_remaining,
+            total_quota=total_quota,
         )
     except HTTPException:
         raise
@@ -211,9 +217,19 @@ def _is_mps_billing_v2(account: Optional[dict]) -> bool:
 
 async def _legacy_mps_credits_response(user: UserModel) -> MPSBillingCreditsResponse:
     if DEPLOYMENT_MODE == "oss":
-        usage = await mps_service_key_client.get_usage_by_created_by(
-            str(user.provider_id)
-        )
+        # OSS mode: read credits from local DB — no MPS call needed.
+        # Credits accumulate via add_oss_llm_token_usage after every call
+        # (1000 LLM tokens = 1 credit = 1 cent).
+        organization_id = user.selected_organization_id
+        if not organization_id:
+            # No org selected: return zeroed response rather than erroring
+            return MPSBillingCreditsResponse(
+                billing_version="legacy",
+                total_credits_used=0.0,
+                remaining_credits=0.0,
+                total_quota=0.0,
+            )
+        usage = await db_client.get_oss_billing_credits(organization_id)
     else:
         if not user.selected_organization_id:
             raise HTTPException(status_code=400, detail="No organization selected")
@@ -223,11 +239,12 @@ async def _legacy_mps_credits_response(user: UserModel) -> MPSBillingCreditsResp
 
     total_used = float(usage.get("total_credits_used", 0.0))
     total_remaining = float(usage.get("remaining_credits", 0.0))
+    total_quota = float(usage.get("total_quota", total_used + total_remaining))
     return MPSBillingCreditsResponse(
         billing_version="legacy",
         total_credits_used=total_used,
         remaining_credits=total_remaining,
-        total_quota=total_used + total_remaining,
+        total_quota=total_quota,
     )
 
 

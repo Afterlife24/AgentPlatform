@@ -908,11 +908,12 @@ async def _run_pipeline_impl(
     )
 
     pipeline_metrics_aggregator = PipelineMetricsAggregator()
+    # Give the engine a reference so it can push embedding tokens in
+    # after each RAG retrieval (set before engine.initialize()).
+    engine.set_metrics_aggregator(pipeline_metrics_aggregator)
 
     user_context_aggregator = context_aggregator.user()
-    assistant_context_aggregator = context_aggregator.assistant()
-
-    # Register user idle event handlers
+    assistant_context_aggregator = context_aggregator.assistant()    # Register user idle event handlers
     user_idle_handler = engine.create_user_idle_handler()
 
     @user_context_aggregator.event_handler("on_user_turn_idle")
