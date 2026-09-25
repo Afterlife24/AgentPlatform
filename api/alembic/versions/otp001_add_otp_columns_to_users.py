@@ -1,7 +1,7 @@
 """add otp columns to users table
 
 Revision ID: otp001
-Revises: rag003
+Revises: csv003_add_value_profile
 Create Date: 2026-07-24 00:00:00.000000
 
 """
@@ -13,7 +13,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "otp001"
-down_revision: Union[str, None] = "csv002_row_data_json_to_jsonb"
+down_revision: Union[str, None] = "csv003_add_value_profile"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
