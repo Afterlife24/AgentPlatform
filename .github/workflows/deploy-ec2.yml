@@ -1,42 +1,37 @@
 name: Deploy to EC2
 
-# Deploys to the Mumbai EC2 instances whenever code lands on develop or main
-# via a merged PR (i.e. a push to the branch itself, not every commit inside
-# an open PR). develop -> devagents.autonomiq.ae, main -> mainagents.autonomiq.ae.
+# Deploys to the Mumbai EC2 instance whenever code lands on main via a push
+# (i.e. a direct push or a merged PR, not every commit inside an open PR).
 #
-# Also triggers when the WhatsApp Adapter repo dispatches an event (always
-# deploys to the develop runner in that case).
+# Also triggers when the WhatsApp Adapter repo dispatches an event.
 #
-# Runs on a self-hosted runner installed directly on each target EC2 instance
-# (see /home/ubuntu/actions-runner on each box). The runner polls GitHub
+# Runs on a self-hosted runner installed directly on the target EC2 instance
+# (see /home/ubuntu/actions-runner on the box). The runner polls GitHub
 # outbound, so no inbound SSH access from GitHub's IP ranges is needed.
 
 on:
   push:
     branches:
-      - develop
       - main
   repository_dispatch:
     types: [whatsapp-adapter-updated]
 
 concurrency:
-  group: deploy-${{ github.event_name == 'repository_dispatch' && 'develop' || github.ref_name }}
+  group: deploy-ec2
   cancel-in-progress: false
 
 jobs:
   deploy:
-    runs-on: [self-hosted, "${{ github.event_name == 'repository_dispatch' && 'develop' || github.ref_name }}"]
+    runs-on: [self-hosted, develop]
     steps:
       - name: Sync repo and redeploy
         run: |
           set -euo pipefail
 
-          DEPLOY_BRANCH="${{ github.event_name == 'repository_dispatch' && 'develop' || github.ref_name }}"
-
           cd /home/ubuntu/dograh
           git fetch origin
-          git checkout "$DEPLOY_BRANCH"
-          git reset --hard "origin/$DEPLOY_BRANCH"
+          git checkout main
+          git reset --hard origin/main
 
           # Also pull latest WhatsApp Adapter code (sibling repo)
           if [ -d /home/ubuntu/Whatsapp_Adapter ]; then
@@ -53,4 +48,4 @@ jobs:
           # be restarted to avoid 502s.
           sudo docker compose --profile remote restart nginx
 
-          echo "Deployed $(git rev-parse --short HEAD) on $DEPLOY_BRANCH"
+          echo "Deployed $(git rev-parse --short HEAD) on main"
