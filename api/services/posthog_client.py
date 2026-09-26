@@ -3,15 +3,27 @@ from typing import Any, Optional
 from loguru import logger
 from posthog import Posthog
 
-from api.constants import POSTHOG_API_KEY, POSTHOG_HOST
+from api.constants import ENABLE_TELEMETRY, POSTHOG_API_KEY, POSTHOG_HOST
 
 _posthog_client: Posthog | None = None
 POSTHOG_SERVER_GROUP_IDENTIFY_DISTINCT_ID = "server-group-identify"
 
 
 def get_posthog() -> Posthog | None:
-    """Return the lazily-initialised PostHog client, or None if not configured."""
+    """Return the lazily-initialised PostHog client, or None if disabled.
+
+    Returns None — making every capture/identify call in this module a silent
+    no-op — when either:
+      * ``ENABLE_TELEMETRY`` is false, or
+      * ``POSTHOG_API_KEY`` is unset/empty.
+
+    ``ENABLE_TELEMETRY`` previously gated only Sentry (see api/app.py), so
+    setting it false left PostHog reporting. It is honoured here too, giving
+    one switch that turns off all outbound telemetry.
+    """
     global _posthog_client
+    if not ENABLE_TELEMETRY:
+        return None
     if _posthog_client is None and POSTHOG_API_KEY:
         _posthog_client = Posthog(POSTHOG_API_KEY, host=POSTHOG_HOST)
     return _posthog_client

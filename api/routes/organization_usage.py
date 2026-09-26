@@ -218,8 +218,9 @@ def _is_mps_billing_v2(account: Optional[dict]) -> bool:
 async def _legacy_mps_credits_response(user: UserModel) -> MPSBillingCreditsResponse:
     if DEPLOYMENT_MODE == "oss":
         # OSS mode: read credits from local DB — no MPS call needed.
-        # Credits accumulate via add_oss_llm_token_usage after every call
-        # (1000 LLM tokens = 1 credit = 1 cent).
+        # Credits accumulate via add_oss_call_credits after every completed call,
+        # priced per token in workflow_run_billing._calculate_credits
+        # (1 credit = 1 cent).
         organization_id = user.selected_organization_id
         if not organization_id:
             # No org selected: return zeroed response rather than erroring
