@@ -71,6 +71,10 @@ class UserModel(Base):
     is_superuser = Column(Boolean, default=False)
     email = Column(String, nullable=True)
     password_hash = Column(String, nullable=True)
+    # OTP fields for email verification (signup) and password reset
+    otp_code = Column(String(6), nullable=True)
+    otp_expires_at = Column(DateTime(timezone=True), nullable=True)
+    otp_purpose = Column(String(16), nullable=True)  # "signup" | "reset"
 
     __table_args__ = (
         Index(
