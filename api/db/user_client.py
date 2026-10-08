@@ -190,6 +190,50 @@ class UserClient(BaseDBClient):
             await session.execute(stmt)
             await session.commit()
 
+    async def get_primary_user_for_organization(
+        self, organization_id: int
+    ) -> UserModel | None:
+        """Return the primary (account-holder) user for an organization.
+
+        Used to resolve an owner email when an account is looked up by API key
+        or org id (which otherwise carry no user identity). "Primary" is defined
+        as:
+          1. a user whose selected_organization_id is this org (the active
+             account holder), lowest id first (the creator), else
+          2. any member via the organization_users association, lowest id first.
+
+        Returns None if the organization has no users at all.
+        """
+        from api.db.models import organization_users_association
+
+        async with self.async_session() as session:
+            # Prefer the active account holder(s).
+            result = await session.execute(
+                select(UserModel)
+                .where(UserModel.selected_organization_id == organization_id)
+                .order_by(UserModel.id)
+                .limit(1)
+            )
+            user = result.scalars().first()
+            if user is not None:
+                return user
+
+            # Fall back to any member of the org.
+            result = await session.execute(
+                select(UserModel)
+                .join(
+                    organization_users_association,
+                    organization_users_association.c.user_id == UserModel.id,
+                )
+                .where(
+                    organization_users_association.c.organization_id
+                    == organization_id
+                )
+                .order_by(UserModel.id)
+                .limit(1)
+            )
+            return result.scalars().first()
+
     async def get_user_by_email(self, email: str) -> UserModel | None:
         """Fetch a user by their email address (case-insensitive).
 

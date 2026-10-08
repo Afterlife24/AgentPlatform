@@ -74,6 +74,18 @@ services:
     image: dograh-local/dograh-api:local
     pull_policy: never
     restart: unless-stopped
+    # Prepaid credit wallet config (Phases 3–8). The base compose file doesn't
+    # pass these through, so inject them here.
+    environment:
+      # Shared secret for the internal credits API. Without it, every
+      # /internal/credits route returns 503 ("Internal API is not configured").
+      DOGRAH_INTERNAL_SECRET: "${DOGRAH_INTERNAL_SECRET:-}"
+      # Master switch for refusing runs on an empty/blocked wallet (Phase 5).
+      # Defaults to false so the feature deploys and balances seed before any
+      # customer is refused — flipping this to true is the go-live moment (8.5).
+      ENFORCE_CREDIT_BALANCE: "${ENFORCE_CREDIT_BALANCE:-false}"
+      # Balance at or below which a run is refused when enforcement is on.
+      MINIMUM_WALLET_BALANCE_USD: "${MINIMUM_WALLET_BALANCE_USD:-0.00}"
     # Mount the local startup script and use it as the entrypoint
     # (adds --proxy-headers to uvicorn for Twilio signature validation behind nginx)
     volumes:
@@ -140,6 +152,16 @@ services:
       # AGENT_MAPPINGS used only for one-time migration to MongoDB on first deploy.
       # After migration, all agent config is managed via the dashboard.
       AGENT_MAPPINGS: "${WHATSAPP_AGENT_MAPPINGS:-}"
+      # Phase 1: Authentication
+      ADAPTER_ADMIN_PASSWORD: "${ADAPTER_ADMIN_PASSWORD}"
+      ADAPTER_SESSION_SECRET: "${ADAPTER_SESSION_SECRET}"
+      DASHBOARD_ORIGIN: "http://localhost:3001"
+      # Phase 6: operator billing console → AgentX internal credits API.
+      # The adapter forwards this secret to AgentX; it is NEVER sent to the
+      # dashboard (browser) service. Formal compose wiring is Phase 8, added
+      # here so the grant flow is testable. http://api:8000 is internal DNS.
+      AGENTX_INTERNAL_BASE: "http://api:8000/api/v1"
+      DOGRAH_INTERNAL_SECRET: "${DOGRAH_INTERNAL_SECRET:-}"
     ports:
       # Expose adapter directly so the dashboard (browser) can reach it
       - "8001:8080"
@@ -154,10 +176,16 @@ services:
     build:
       context: ../Whatsapp_Adapter/dashboard
       dockerfile: Dockerfile
+      args:
+        # Baked into rewrites() at build time so the server-side proxy
+        # targets the adapter container, not localhost.
+        ADAPTER_INTERNAL_URL: "http://whatsapp_adapter:8080"
+        # Phase 6: default INR→USD rate pre-filled in the billing console.
+        # Inlined into the browser bundle at build time; public, not a secret.
+        NEXT_PUBLIC_DEFAULT_USD_INR_RATE: "${DEFAULT_USD_INR_RATE:-0.0112}"
     container_name: whatsapp_dashboard
     restart: unless-stopped
     environment:
-      # Browser calls the adapter on the host-exposed port
       NEXT_PUBLIC_ADAPTER_URL: "${WHATSAPP_DASHBOARD_ADAPTER_URL:-http://localhost:8001}"
     ports:
       - "3001:3001"

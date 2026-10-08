@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from api.constants import DEPLOYMENT_MODE, UI_APP_URL
 from api.db import db_client
 from api.db.models import UserModel
+from api.services import credit_account_service
 from api.services.auth.depends import get_user, get_user_with_selected_organization
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.reports import generate_usage_runs_report_csv
@@ -48,6 +49,11 @@ class MPSBillingAccountResponse(BaseModel):
 
 
 class MPSCreditLedgerEntryResponse(BaseModel):
+    # NOTE: in the OSS/v2 wallet path, the legacy "credits"-named fields below
+    # (credits_delta, balance_after) carry amounts in the account's DISPLAY
+    # CURRENCY, not credits. The names are retained only so the existing
+    # frontend ledger table renders unchanged; nothing shown to the customer is
+    # labelled "credits". The hosted MPS path still populates them with credits.
     id: int
     entry_type: str
     origin: Optional[str] = None
@@ -66,6 +72,14 @@ class MPSCreditLedgerEntryResponse(BaseModel):
     quantity_unit: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: str
+    # Prepaid-wallet additions (Phase 7). tokens_charged is the single total the
+    # wallet stores for a call/KB debit (prompt + completion + embedding). The
+    # split fields are reserved for a future breakdown and stay null for OSS.
+    tokens_charged: Optional[int] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    embedding_tokens: Optional[int] = None
+    memo: Optional[str] = None
 
 
 class MPSBillingCreditsResponse(BaseModel):
@@ -79,6 +93,10 @@ class MPSBillingCreditsResponse(BaseModel):
     page: int = 1
     limit: int = 50
     total_pages: int = 0
+    # Prepaid-wallet additions (Phase 7). Drive the low-balance warning and the
+    # suspended-account notice on the customer billing page.
+    low_balance: bool = False
+    is_blocked: bool = False
 
 
 def _optional_int(value: Any) -> Optional[int]:
@@ -248,6 +266,67 @@ async def _legacy_mps_credits_response(user: UserModel) -> MPSBillingCreditsResp
     )
 
 
+async def _oss_wallet_billing_response(
+    organization_id: int, page: int, limit: int
+) -> MPSBillingCreditsResponse:
+    """Build the customer billing response from the prepaid wallet (OSS v2).
+
+    All FX conversion is done in the service, which has the exact Decimal
+    balance. This handler only shapes the already-converted figures into the
+    response model (thin handler, per api/AGENTS.md).
+    """
+    view = await credit_account_service.build_oss_billing_view(
+        organization_id, page=page, limit=limit
+    )
+
+    def _f(value: Any) -> float:
+        # Decimals are exact; the response model is float-typed, so convert at
+        # the very edge, after all arithmetic is done.
+        return float(value)
+
+    balance_display = _f(view["balance_display"])
+
+    return MPSBillingCreditsResponse(
+        billing_version="v2",
+        # remaining_credits drives the "balance" card; show it in display currency.
+        remaining_credits=balance_display,
+        total_credits_used=_f(view["total_debits_display"]),
+        # No "quota" in a prepaid wallet; the v2 UI shows the ledger, not a bar.
+        total_quota=0.0,
+        low_balance=bool(view["low_balance"]),
+        is_blocked=bool(view["is_blocked"]),
+        account=MPSBillingAccountResponse(
+            id=organization_id,
+            organization_id=organization_id,
+            billing_mode="prepaid_wallet",
+            cached_balance_credits=balance_display,
+            currency=str(view["display_currency"]),
+        ),
+        ledger_entries=[
+            MPSCreditLedgerEntryResponse(
+                id=int(entry["id"]),
+                entry_type=str(entry["entry_type"]),
+                origin=entry.get("origin"),
+                credits_delta=_f(entry["credits_delta"]),
+                balance_after=_f(entry["balance_after"]),
+                amount_minor=entry.get("amount_minor"),
+                amount_currency=entry.get("amount_currency"),
+                workflow_run_id=entry.get("workflow_run_id"),
+                workflow_id=entry.get("workflow_id"),
+                tokens_charged=entry.get("tokens_charged"),
+                memo=entry.get("memo"),
+                metadata={},
+                created_at=str(entry["created_at"]),
+            )
+            for entry in view["ledger_entries"]
+        ],
+        total_count=int(view["total_count"]),
+        page=int(view["page"]),
+        limit=int(view["limit"]),
+        total_pages=int(view["total_pages"]),
+    )
+
+
 @router.get("/billing/credits", response_model=MPSBillingCreditsResponse)
 async def get_billing_credits(
     page: int = Query(1, ge=1),
@@ -256,7 +335,15 @@ async def get_billing_credits(
 ):
     """Return legacy MPS credits or paginated v2 billing ledger details for the org."""
     try:
-        if DEPLOYMENT_MODE == "oss" or not user.selected_organization_id:
+        if DEPLOYMENT_MODE == "oss":
+            if not user.selected_organization_id:
+                # No org selected: zeroed response rather than erroring.
+                return await _legacy_mps_credits_response(user)
+            return await _oss_wallet_billing_response(
+                user.selected_organization_id, page, limit
+            )
+
+        if not user.selected_organization_id:
             return await _legacy_mps_credits_response(user)
 
         organization_id = user.selected_organization_id

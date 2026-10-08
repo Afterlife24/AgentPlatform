@@ -13,9 +13,11 @@ import tempfile
 
 from loguru import logger
 
+from decimal import ROUND_HALF_UP, Decimal
+
 from api.db import db_client
 from api.db.models import KnowledgeBaseChunkModel
-from api.enums import PostHogEvent
+from api.enums import CreditLedgerEntryType, PostHogEvent
 from api.services.gen_ai import build_embedding_service
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.posthog_client import capture_event
@@ -412,16 +414,29 @@ async def process_knowledge_base_document(
             docling_metadata=docling_metadata,
         )
 
-        # Bill embedding tokens consumed during ingestion immediately —
-        # this is independent of any call, so billing updates right away.
+        # Debit the prepaid wallet for embedding tokens consumed during
+        # ingestion. This is independent of any call, so it bills right away.
+        # Priced at the embedding rate ($0.02 / 1M) with the same 1.2x markup.
+        # Keyed kb:{document_id} so reprocessing the same document never
+        # double-debits.
         if total_embed_tokens > 0:
+            kb_cost_usd = (
+                (Decimal(total_embed_tokens) / Decimal("1000000"))
+                * Decimal("0.02")
+                * Decimal("1.2")
+            ).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+
             logger.info(
-                f"Document {document_id}: billing {total_embed_tokens} ingestion "
-                f"embed tokens for org {organization_id}"
+                f"Document {document_id}: debiting {total_embed_tokens} ingestion "
+                f"embed tokens → ${kb_cost_usd} USD for org {organization_id}"
             )
-            await db_client.add_oss_kb_embed_token_usage(
+            await db_client.apply_ledger_entry(
                 organization_id=organization_id,
-                embed_tokens=total_embed_tokens,
+                entry_type=CreditLedgerEntryType.DEBIT_CALL,
+                amount_usd=-kb_cost_usd,
+                idempotency_key=f"kb:{document_id}",
+                tokens_charged=total_embed_tokens,
+                memo=f"Knowledge base ingestion: document {document_id}",
             )
 
         # Fire PostHog event so ingestion token usage is visible in analytics.
