@@ -43,6 +43,7 @@ import {
     entryKind,
     entryLabel,
     formatCurrency,
+    formatCurrencyPrecise,
     formatDateTime,
     formatMinor,
     formatTokens,
@@ -477,10 +478,10 @@ function LedgerRow({
                     isCredit ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400",
                 )}
             >
-                {formatCurrency(delta, currency, { signed: true })}
+                {formatCurrencyPrecise(delta, currency, { signed: true })}
             </TableCell>
             <TableCell className="text-right whitespace-nowrap tabular-nums text-muted-foreground">
-                {formatCurrency(entry.balance_after, currency)}
+                {formatCurrencyPrecise(entry.balance_after, currency)}
             </TableCell>
         </TableRow>
     );

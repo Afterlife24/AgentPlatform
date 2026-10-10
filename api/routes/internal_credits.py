@@ -17,8 +17,14 @@ from api.schemas.internal_credits import (
     GrantRequest,
     GrantResponse,
     LedgerResponse,
+    OrganizationListResponse,
+    OrganizationSummary,
+    OrganizationWorkflowsResponse,
     ResolveAccountRequest,
     ResolveAccountResponse,
+    SetCurrencyRequest,
+    SetCurrencyResponse,
+    WorkflowSummary,
 )
 from api.services import credit_account_service as credit_service
 from api.services.auth.internal_auth import verify_internal_secret
@@ -57,6 +63,35 @@ async def resolve_account(request: ResolveAccountRequest):
     )
 
 
+@router.get("/organizations", response_model=OrganizationListResponse)
+async def list_organizations():
+    """List every organization with owner email and workflow count.
+
+    Platform-admin view for the operator console's org picker. Guarded by the
+    internal secret (router-level dependency).
+    """
+    orgs = await credit_service.list_organizations()
+    return OrganizationListResponse(
+        organizations=[OrganizationSummary(**o) for o in orgs]
+    )
+
+
+@router.get(
+    "/{organization_id}/workflows", response_model=OrganizationWorkflowsResponse
+)
+async def get_organization_workflows(organization_id: int):
+    """List an org's workflows (name + status) for display only.
+
+    Billing is per-org; this is informational so the operator can see what runs
+    under the account. Not a per-workflow charge.
+    """
+    workflows = await credit_service.get_organization_workflows(organization_id)
+    return OrganizationWorkflowsResponse(
+        organization_id=organization_id,
+        workflows=[WorkflowSummary(**w) for w in workflows],
+    )
+
+
 @router.post("/grant", response_model=GrantResponse)
 async def grant(request: GrantRequest):
     """Top up a wallet. USD is computed server-side; never accepted from caller.
@@ -90,6 +125,21 @@ async def adjust(request: AdjustRequest):
         note=request.note,
     )
     return AdjustResponse(**result)
+
+
+@router.post("/{organization_id}/currency", response_model=SetCurrencyResponse)
+async def set_currency(organization_id: int, request: SetCurrencyRequest):
+    """Set the account's display currency (operator decision, not a payment).
+
+    Changes only how balances are shown; never touches the USD balance or the
+    ledger. USD needs no rate; a non-USD currency needs a positive fx rate.
+    """
+    result = await credit_service.set_display_currency(
+        organization_id=organization_id,
+        display_currency=request.display_currency,
+        fx_rate_to_usd=request.fx_rate_to_usd,
+    )
+    return SetCurrencyResponse(**result)
 
 
 @router.get("/{organization_id}/ledger", response_model=LedgerResponse)

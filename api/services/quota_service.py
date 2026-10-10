@@ -522,3 +522,36 @@ async def authorize_workflow_run_start(
         logger.error(f"Error during quota check: {str(e)}")
         # On unexpected error, allow the call to proceed
         return QuotaCheckResult(has_quota=True)
+
+
+async def authorize_billable_action(organization_id: int | None) -> QuotaCheckResult:
+    """Authorize a non-call billable action (e.g. knowledge-base ingestion).
+
+    Knowledge-base processing costs embedding tokens and debits the wallet, but
+    it runs outside authorize_workflow_run_start. This is the shared gate for
+    those paths so they refuse an empty/blocked wallet the same way calls do.
+
+    Mirrors the call path exactly:
+      - only enforces for OSS with ENFORCE_CREDIT_BALANCE on;
+      - reuses _authorize_oss_wallet_balance (blocked -> account_blocked,
+        balance <= threshold -> insufficient_balance);
+      - fails CLOSED: if the balance can't be read, the action is refused.
+
+    With the flag off, returns has_quota=True without reading the balance.
+    """
+    if DEPLOYMENT_MODE != "oss" or not ENFORCE_CREDIT_BALANCE:
+        return QuotaCheckResult(has_quota=True)
+
+    try:
+        return await _authorize_oss_wallet_balance(organization_id)
+    except WalletUnavailableError as e:
+        logger.error(
+            "Balance check failed for billable action (org {}): {}",
+            organization_id,
+            e,
+        )
+        return QuotaCheckResult(
+            has_quota=False,
+            error_code="balance_check_failed",
+            error_message="Could not verify your balance. Please try again.",
+        )

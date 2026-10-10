@@ -200,9 +200,24 @@ async def test_grant_usd(db_session, test_organization):
 
 
 @pytest.mark.asyncio
-async def test_grant_inr_sets_display_currency(db_session, test_organization):
+async def test_grant_inr_after_setting_currency(db_session, test_organization):
+    """Admin sets the account to INR first, then an INR payment is accepted.
+
+    A fresh account defaults to USD, so recording INR requires setting the
+    account's currency to INR first (the deliberate, locked flow).
+    """
     with _patch_secret(TEST_SECRET):
         async with await _client() as client:
+            # 1. Admin sets the account currency to INR.
+            set_resp = await client.post(
+                f"/api/v1/internal/credits/{test_organization.id}/currency",
+                json={"display_currency": "INR", "fx_rate_to_usd": "0.01124"},
+                headers={HEADER: TEST_SECRET},
+            )
+            assert set_resp.status_code == 200
+            assert set_resp.json()["display_currency"] == "INR"
+
+            # 2. Now an INR payment is accepted.
             grant_resp = await client.post(
                 "/api/v1/internal/credits/grant",
                 json={
@@ -218,7 +233,7 @@ async def test_grant_inr_sets_display_currency(db_session, test_organization):
             assert grant_resp.status_code == 200
             assert grant_resp.json()["credited_usd"] == "5.620000"
 
-            # The account's display currency must now be INR
+            # Display currency is INR, balance shown in rupees.
             resolve_resp = await client.post(
                 "/api/v1/internal/credits/resolve-account",
                 json={"organization_id": test_organization.id},
@@ -227,6 +242,26 @@ async def test_grant_inr_sets_display_currency(db_session, test_organization):
     body = resolve_resp.json()
     assert body["display_currency"] == "INR"
     assert body["balance_display"] != body["balance_usd"]
+
+
+@pytest.mark.asyncio
+async def test_grant_mismatched_currency_rejected(db_session, test_organization):
+    """A payment in a currency other than the account's is refused (409)."""
+    with _patch_secret(TEST_SECRET):
+        async with await _client() as client:
+            # Account defaults to USD; recording INR must be rejected.
+            resp = await client.post(
+                "/api/v1/internal/credits/grant",
+                json={
+                    "organization_id": test_organization.id,
+                    "idempotency_key": "grant-mismatch-1",
+                    "paid_amount_minor": 50000,
+                    "paid_currency": "INR",
+                    "fx_rate_to_usd": "0.01124",
+                },
+                headers={HEADER: TEST_SECRET},
+            )
+            assert resp.status_code == 409
 
 
 @pytest.mark.asyncio
@@ -297,20 +332,42 @@ async def test_grant_usd_with_rate_2_rejected(db_session, test_organization):
 
 
 @pytest.mark.asyncio
-async def test_grant_non_usd_without_rate_rejected(db_session, test_organization):
+async def test_set_currency_inr_without_rate_rejected(db_session, test_organization):
+    """Setting a non-USD currency without an fx rate is rejected (400).
+
+    The rate check now lives on the set-currency endpoint — once an account is
+    INR it already carries a rate, so a later INR grant inherits it.
+    """
     with _patch_secret(TEST_SECRET):
         async with await _client() as client:
             resp = await client.post(
-                "/api/v1/internal/credits/grant",
-                json={
-                    "organization_id": test_organization.id,
-                    "idempotency_key": "grant-inr-norate",
-                    "paid_amount_minor": 50000,
-                    "paid_currency": "INR",
-                },
+                f"/api/v1/internal/credits/{test_organization.id}/currency",
+                json={"display_currency": "INR"},
                 headers={HEADER: TEST_SECRET},
             )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_set_currency_usd_then_inr(db_session, test_organization):
+    """Round-trip: USD (no rate) then INR (with rate), both accepted."""
+    with _patch_secret(TEST_SECRET):
+        async with await _client() as client:
+            usd = await client.post(
+                f"/api/v1/internal/credits/{test_organization.id}/currency",
+                json={"display_currency": "USD"},
+                headers={HEADER: TEST_SECRET},
+            )
+            inr = await client.post(
+                f"/api/v1/internal/credits/{test_organization.id}/currency",
+                json={"display_currency": "INR", "fx_rate_to_usd": "0.0112"},
+                headers={HEADER: TEST_SECRET},
+            )
+    assert usd.status_code == 200
+    assert usd.json()["display_currency"] == "USD"
+    assert inr.status_code == 200
+    assert inr.json()["display_currency"] == "INR"
+    assert inr.json()["display_fx_rate_to_usd"] == "0.011200"
 
 
 # ──────────────────────────────── adjust ────────────────────────────────

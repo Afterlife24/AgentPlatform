@@ -34,6 +34,54 @@ class ResolveAccountResponse(BaseModel):
     low_balance_threshold_usd: Decimal
 
 
+# ─────────────────────────── set display currency ───────────────────────────
+
+
+class SetCurrencyRequest(BaseModel):
+    """Explicitly set the account's display currency (operator-chosen).
+
+    USD requires no rate (it is always 1). A non-USD currency requires a
+    positive fx rate (1 display unit = X USD), which becomes the account's
+    default display rate until the next payment refines it.
+    """
+
+    display_currency: str = Field(..., min_length=3, max_length=3)
+    fx_rate_to_usd: Optional[Decimal] = None
+
+
+class SetCurrencyResponse(BaseModel):
+    organization_id: int
+    display_currency: str
+    display_fx_rate_to_usd: Decimal
+    balance_usd: Decimal
+    balance_display: Decimal
+
+
+# ──────────────────── organization directory & workflows ────────────────────
+
+
+class OrganizationSummary(BaseModel):
+    organization_id: int
+    email: Optional[str] = None
+    workflow_count: int
+
+
+class OrganizationListResponse(BaseModel):
+    organizations: list[OrganizationSummary]
+
+
+class WorkflowSummary(BaseModel):
+    id: int
+    name: Optional[str] = None
+    status: Optional[str] = None
+    workflow_uuid: Optional[str] = None
+
+
+class OrganizationWorkflowsResponse(BaseModel):
+    organization_id: int
+    workflows: list[WorkflowSummary]
+
+
 # ─────────────────────────────── grant ─────────────────────────────────
 
 

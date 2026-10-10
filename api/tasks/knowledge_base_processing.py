@@ -113,6 +113,28 @@ async def process_knowledge_base_document(
     temp_file_path = None
 
     try:
+        # Prepaid-wallet safety net: refuse ingestion for an empty/blocked
+        # wallet before downloading or embedding (which cost money). The route
+        # already gates this, but a direct enqueue (reprocess, migration) could
+        # bypass it — so check here too. No-op when enforcement is off.
+        from api.services.quota_service import authorize_billable_action
+
+        quota = await authorize_billable_action(organization_id)
+        if not quota.has_quota:
+            logger.warning(
+                f"Document {document_id}: refused — {quota.error_code} "
+                f"(org {organization_id}). No tokens spent, no debit."
+            )
+            await db_client.update_document_status(
+                document_id,
+                "failed",
+                error_message=(
+                    quota.error_message
+                    or "Insufficient wallet balance to process this document."
+                ),
+            )
+            return
+
         await db_client.update_document_status(document_id, "processing")
 
         filename = s3_key.split("/")[-1]

@@ -8,23 +8,43 @@ import type { MpsCreditLedgerEntryResponse } from "@/client/types.gen";
  * The frontend only formats — it never converts. Nothing here says "credits".
  */
 
-/** Format a currency amount with the account's currency symbol (₹, $, …). */
+/**
+ * Format a currency amount with the account's currency symbol (₹, $, …).
+ *
+ * By default shows exactly 2 decimals — right for summary figures like the
+ * balance and total-spent cards. Pass `maxFractionDigits` higher for the
+ * transaction table, where sub-cent charges (e.g. a 480-token knowledge-base
+ * debit of $0.000012) must stay visible instead of rounding to $0.00.
+ */
 export function formatCurrency(
     amount: number | null | undefined,
     currency: string | null | undefined,
-    { signed = false }: { signed?: boolean } = {},
+    { signed = false, maxFractionDigits = 2 }: { signed?: boolean; maxFractionDigits?: number } = {},
 ): string {
     const value = amount ?? 0;
     const formatted = new Intl.NumberFormat(undefined, {
         style: "currency",
         currency: currency || "USD",
         minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
+        maximumFractionDigits: Math.max(2, maxFractionDigits),
     }).format(Math.abs(value));
 
     if (value < 0) return `−${formatted}`;
     if (signed && value > 0) return `+${formatted}`;
     return formatted;
+}
+
+/**
+ * Full-precision currency for the transaction table: 2 decimals minimum, up to
+ * 6 maximum. Clean amounts stay clean ($1.00), tiny charges show in full
+ * ($0.000012) — matching the operator console's AgentX ledger.
+ */
+export function formatCurrencyPrecise(
+    amount: number | null | undefined,
+    currency: string | null | undefined,
+    { signed = false }: { signed?: boolean } = {},
+): string {
+    return formatCurrency(amount, currency, { signed, maxFractionDigits: 6 });
 }
 
 /** Format an integer minor-unit amount (paise/cents) in its own currency. */

@@ -292,6 +292,41 @@ def to_display(
     return display_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
+def to_display_precise(
+    amount_usd: Decimal,
+    display_currency: str,
+    fx_rate_from_usd: Optional[Decimal] = None,
+) -> Decimal:
+    """Convert a USD amount to display currency at FULL (6dp) precision.
+
+    Same conversion as to_display, but keeps 6 decimals instead of rounding to
+    2. Used for individual ledger rows, where a sub-cent charge (e.g. a
+    480-token KB debit of $0.000012) must stay visible rather than collapsing
+    to 0.00. Summary figures (balance, total spent) still use to_display (2dp).
+    """
+    currency_upper = display_currency.upper()
+
+    if currency_upper == "USD":
+        if fx_rate_from_usd is not None and fx_rate_from_usd != Decimal("1.0"):
+            raise ValueError(
+                f"USD requires fx_rate_from_usd to be absent or 1.0, got {fx_rate_from_usd}"
+            )
+        display_amount = amount_usd
+    else:
+        if fx_rate_from_usd is None:
+            raise ValueError(
+                f"Non-USD currency {display_currency} requires fx_rate_from_usd"
+            )
+        if fx_rate_from_usd <= 0:
+            raise ValueError(
+                f"fx_rate_from_usd must be positive, got {fx_rate_from_usd}"
+            )
+        display_amount = amount_usd * fx_rate_from_usd
+
+    # Keep 6 decimals (the ledger's native precision) with ROUND_HALF_UP.
+    return display_amount.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+
+
 # ─────────────────────── Account summary & grant/adjust ───────────────────────
 
 
@@ -369,7 +404,22 @@ async def grant_credits(
         HTTPException 400: Invalid amount or FX rate
     """
     # Ensure the account exists before attempting the grant
-    await db_client.get_or_create_account(organization_id)
+    account = await db_client.get_or_create_account(organization_id)
+
+    # Enforce the account's chosen display currency: a payment may only be
+    # recorded in the currency the admin fixed for this account. This is the
+    # server-side guard behind the locked UI toggle — a mismatched request is
+    # refused even if the UI is bypassed.
+    account_currency = (account.display_currency or "USD").upper()
+    if paid_currency.upper() != account_currency:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"This account is set to {account_currency}. "
+                f"Record the payment in {account_currency}, or change the "
+                f"account's currency first."
+            ),
+        )
 
     try:
         credited_usd = compute_credited_usd(
@@ -555,6 +605,10 @@ async def build_oss_billing_view(
     def to_disp(amount_usd: Decimal) -> Decimal:
         return to_display(amount_usd, account.display_currency, display_rate)
 
+    def to_disp_precise(amount_usd: Decimal) -> Decimal:
+        # 6dp for per-row ledger amounts so sub-cent charges stay visible.
+        return to_display_precise(amount_usd, account.display_currency, display_rate)
+
     balance_display = to_disp(account.balance_usd)
 
     total_count = await db_client.get_ledger_count(organization_id)
@@ -589,9 +643,11 @@ async def build_oss_billing_view(
                 "origin": "knowledge_base"
                 if is_kb
                 else ("call" if entry.entry_type == "debit_call" else None),
-                # Amounts are already in the display currency.
-                "credits_delta": to_disp(entry.amount_usd),
-                "balance_after": to_disp(entry.balance_after_usd),
+                # Amounts are already in the display currency. Per-row amounts
+                # use 6dp precision so a sub-cent debit shows in full rather
+                # than rounding to 0.00 (the summary cards still use 2dp).
+                "credits_delta": to_disp_precise(entry.amount_usd),
+                "balance_after": to_disp_precise(entry.balance_after_usd),
                 # Grants show the tendered amount verbatim; others omit it.
                 "amount_minor": entry.paid_amount_minor
                 if display_type == "grant"
@@ -635,3 +691,134 @@ async def build_oss_billing_view(
         "limit": limit,
         "total_pages": total_pages,
     }
+
+
+# ─────────────────────── Set display currency (Phase 9) ───────────────────────
+
+
+async def set_display_currency(
+    organization_id: int,
+    display_currency: str,
+    fx_rate_to_usd: Optional[Decimal] = None,
+) -> dict:
+    """Explicitly set an account's display currency (operator decision).
+
+    Unlike a grant, this changes only how balances are shown — it never touches
+    the USD balance or writes a ledger entry. Past ledger rows keep the amounts
+    they were tendered in; only the display currency and rate change, going
+    forward.
+
+    Rules:
+      - USD: the rate is always 1; any supplied rate must be absent or exactly 1.
+      - non-USD: a positive fx_rate_to_usd (1 unit = X USD) is required.
+
+    Returns:
+        dict with organization_id, display_currency, display_fx_rate_to_usd,
+        balance_usd, balance_display
+
+    Raises:
+        HTTPException 400: invalid currency/rate combination
+        HTTPException 404: account does not exist
+    """
+    currency = (display_currency or "").upper()
+    if len(currency) != 3:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="display_currency must be a 3-letter ISO code",
+        )
+
+    if currency == "USD":
+        if fx_rate_to_usd is not None and fx_rate_to_usd != Decimal("1"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="USD requires no rate (it is always 1)",
+            )
+        rate = Decimal("1")
+    else:
+        if fx_rate_to_usd is None or fx_rate_to_usd <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"{currency} requires a positive fx_rate_to_usd",
+            )
+        rate = fx_rate_to_usd
+
+    # Ensure the account exists, then update display settings only.
+    await db_client.get_or_create_account(organization_id)
+    try:
+        account = await db_client.update_account_settings(
+            organization_id=organization_id,
+            display_currency=currency,
+            display_fx_rate_to_usd=rate,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
+        ) from e
+
+    display_rate = _display_rate_from_account(
+        account.display_currency, account.display_fx_rate_to_usd
+    )
+    balance_display = to_display(
+        account.balance_usd, account.display_currency, display_rate
+    )
+
+    return {
+        "organization_id": organization_id,
+        "display_currency": account.display_currency,
+        "display_fx_rate_to_usd": account.display_fx_rate_to_usd,
+        "balance_usd": account.balance_usd,
+        "balance_display": balance_display,
+    }
+
+
+# ─────────────── Organization directory & workflows (operator console) ───────────────
+
+
+async def list_organizations() -> list[dict]:
+    """List every organization with its owner email and workflow count.
+
+    Powers the operator billing console's org picker. Each entry:
+    {organization_id, email, workflow_count}. This is a platform-admin view
+    (it enumerates all tenants), guarded by the internal secret at the route.
+    """
+    orgs = await db_client.list_organizations_with_email()
+
+    out: list[dict] = []
+    for org in orgs:
+        org_id = org["organization_id"]
+        counts = await db_client.get_workflow_counts(organization_id=org_id)
+        # get_workflow_counts returns {"total", "active", "archived"}; "total"
+        # already sums the rest, so use it directly (don't sum all values).
+        workflow_count = int(counts.get("total", 0)) if counts else 0
+        out.append(
+            {
+                "organization_id": org_id,
+                "email": org["email"],
+                "workflow_count": workflow_count,
+            }
+        )
+    return out
+
+
+async def get_organization_workflows(organization_id: int) -> list[dict]:
+    """List an org's workflows for display only (name + status).
+
+    Billing is per-org — every workflow draws from the one org wallet — so this
+    is informational, not a per-workflow charge. Returns newest first.
+    """
+    workflows = await db_client.get_all_workflows_for_listing(
+        organization_id=organization_id
+    )
+    rows = [
+        {
+            "id": wf.id,
+            "name": wf.name,
+            "status": wf.status,
+            "workflow_uuid": wf.workflow_uuid,
+            "created_at": wf.created_at,
+        }
+        for wf in workflows
+    ]
+    # Newest first; guard against a None created_at.
+    rows.sort(key=lambda r: (r["created_at"] is not None, r["created_at"]), reverse=True)
+    return rows
