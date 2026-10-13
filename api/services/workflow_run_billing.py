@@ -36,8 +36,11 @@ from api.services.managed_model_services import get_mps_correlation_id
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.posthog_client import capture_event
 
-# Pricing per 1M tokens (USD). Decimal throughout — never float — so the cost
-# that lands in the wallet ledger is exact.
+# Pricing per 1M tokens (USD) — based on gpt-4o-mini rates.
+# Decimal throughout — never float — so the cost that lands in the wallet
+# ledger is exact.
+#   gpt-4o-mini: $0.15 input / $0.60 output per 1M tokens
+#   text-embedding-3-small: $0.02 per 1M tokens
 _INPUT_PRICE_PER_1M = Decimal("0.15")
 _OUTPUT_PRICE_PER_1M = Decimal("0.60")
 _EMBED_PRICE_PER_1M = Decimal("0.02")

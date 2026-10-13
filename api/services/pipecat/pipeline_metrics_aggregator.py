@@ -14,9 +14,21 @@ from pipecat.frames.frames import (
 from pipecat.metrics.metrics import (
     LLMTokenUsage,
     LLMUsageMetricsData,
-    STTUsageMetricsData,
     TTSUsageMetricsData,
 )
+
+# STTUsageMetricsData was added in a newer pipecat version (upstream commit
+# 2a8de52bb). The Dograh fork hasn't merged it yet. Define a placeholder class
+# so the isinstance() check compiles but NEVER matches any frame — STT metrics
+# are simply not tracked until the fork merges upstream.
+try:
+    from pipecat.metrics.metrics import STTUsageMetricsData
+except ImportError:
+
+    class STTUsageMetricsData:  # type: ignore[no-redef]
+        """Placeholder — pipecat fork doesn't have this class yet."""
+
+        pass
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 
