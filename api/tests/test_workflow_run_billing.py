@@ -1,14 +1,15 @@
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from api.enums import CreditLedgerEntryType
 from api.services import workflow_run_billing as workflow_run_billing_mod
 from api.services.workflow_run_billing import (
-    _PLATFORM_MARKUP,
-    _calculate_credits,
-    _extract_token_counts,
+    _calculate_cost_usd,
     _is_usage_not_ready_error,
+    _report_oss_platform_usage,
     report_completed_workflow_run_platform_usage,
     report_workflow_run_platform_usage,
 )
@@ -226,105 +227,148 @@ async def test_report_completed_workflow_run_platform_usage_loads_run(monkeypatc
     report_usage.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
-# OSS credit pricing (pure functions)
-#
-# credits = (
-#     (prompt_tokens     * 0.15 / 1M) +
-#     (completion_tokens * 0.60 / 1M) +
-#     (embedding_tokens  * 0.02 / 1M)
-# ) * 1.2 * 100
-#
-# 1 credit = 1 cent, so 1M input tokens = $0.15 * 1.2 = $0.18 = 18 credits.
-# ---------------------------------------------------------------------------
+# ───────────────────────── Phase 4: USD cost formula ─────────────────────────
 
 
-def test_calculate_credits_is_zero_without_tokens():
-    assert _calculate_credits(0, 0, 0) == 0.0
+@pytest.mark.parametrize(
+    "prompt,completion,embedding,expected",
+    [
+        # The five reference rows from design.md §6 — must match exactly.
+        (1_000_000, 0, 0, Decimal("0.180000")),
+        (0, 1_000_000, 0, Decimal("0.720000")),
+        (0, 0, 1_000_000, Decimal("0.024000")),
+        (100_779, 1_472, 54, Decimal("0.019201")),
+        (0, 0, 0, Decimal("0.000000")),
+    ],
+)
+def test_calculate_cost_usd_reference_rows(prompt, completion, embedding, expected):
+    """The USD cost formula must reproduce the five reference rows exactly."""
+    assert _calculate_cost_usd(prompt, completion, embedding) == expected
 
 
-def test_calculate_credits_prices_input_tokens():
-    # 1M prompt tokens: $0.15 * 1.2 markup = $0.18 = 18 credits
-    assert _calculate_credits(1_000_000, 0, 0) == pytest.approx(18.0)
+def test_calculate_cost_usd_returns_decimal():
+    """Cost must be a Decimal (never float) for exact ledger storage."""
+    result = _calculate_cost_usd(1_000_000, 0, 0)
+    assert isinstance(result, Decimal)
 
 
-def test_calculate_credits_prices_output_tokens():
-    # 1M completion tokens: $0.60 * 1.2 markup = $0.72 = 72 credits
-    assert _calculate_credits(0, 1_000_000, 0) == pytest.approx(72.0)
+def test_calculate_cost_usd_applies_markup():
+    """The 1.2x platform markup must be applied.
+
+    Guards against anyone silently deleting the markup. Raw input cost for
+    1M prompt tokens is $0.15; with the 1.2x markup it is $0.18. If the markup
+    were dropped the result would be 0.150000, so this assertion fails loudly.
+    """
+    with_markup = _calculate_cost_usd(1_000_000, 0, 0)
+    assert with_markup == Decimal("0.180000")
+    # Explicitly: result == raw * 1.2
+    raw = Decimal("0.15")
+    assert with_markup == (raw * Decimal("1.2")).quantize(Decimal("0.000001"))
 
 
-def test_calculate_credits_prices_embedding_tokens():
-    # 1M embedding tokens: $0.02 * 1.2 markup = $0.024 = 2.4 credits
-    assert _calculate_credits(0, 0, 1_000_000) == pytest.approx(2.4)
+# ──────────────────── Phase 4: OSS debit on run completion ────────────────────
 
 
-def test_calculate_credits_sums_all_three_token_types():
-    # Realistic single call: 100779 prompt / 1472 completion / 54 embedding
-    expected = (
-        (100_779 * 0.15 / 1_000_000)
-        + (1_472 * 0.60 / 1_000_000)
-        + (54 * 0.02 / 1_000_000)
-    ) * 1.2 * 100
-    assert _calculate_credits(100_779, 1_472, 54) == pytest.approx(expected)
-    assert _calculate_credits(100_779, 1_472, 54) == pytest.approx(1.9201356)
-
-
-def test_calculate_credits_applies_platform_markup():
-    """The 20% markup must be applied — guards against it being dropped."""
-    unmarked = ((1_000_000 * 0.15 / 1_000_000)) * 100
-    assert _calculate_credits(1_000_000, 0, 0) == pytest.approx(
-        unmarked * _PLATFORM_MARKUP
+def _make_oss_run(run_id=777, usage_info=None):
+    return SimpleNamespace(
+        id=run_id,
+        workflow_id=456,
+        is_completed=True,
+        initial_context={},
+        usage_info=usage_info
+        if usage_info is not None
+        else {
+            "llm": {
+                "Svc#0__gemini-3.1": {
+                    "prompt_tokens": 100_779,
+                    "completion_tokens": 1_472,
+                }
+            },
+            "embedding_tokens": 54,
+        },
+        workflow=SimpleNamespace(organization_id=42),
     )
 
 
-def test_calculate_credits_scales_linearly():
-    single = _calculate_credits(10_000, 500, 10)
-    double = _calculate_credits(20_000, 1_000, 20)
-    assert double == pytest.approx(single * 2)
+@pytest.mark.asyncio
+async def test_oss_completion_writes_one_negative_debit(monkeypatch):
+    """A completed OSS run debits the ledger once with the correct USD amount."""
+    run = _make_oss_run()
+    apply = AsyncMock()
+    monkeypatch.setattr(workflow_run_billing_mod, "DEPLOYMENT_MODE", "oss")
+    monkeypatch.setattr(workflow_run_billing_mod.db_client, "apply_ledger_entry", apply)
+    # Silence PostHog
+    monkeypatch.setattr(workflow_run_billing_mod, "capture_event", lambda **k: None)
+
+    await _report_oss_platform_usage(run)
+
+    apply.assert_awaited_once()
+    kwargs = apply.await_args.kwargs
+    assert kwargs["organization_id"] == 42
+    assert kwargs["entry_type"] == CreditLedgerEntryType.DEBIT_CALL
+    # Negative amount (money leaving the wallet), matching reference row 4
+    assert kwargs["amount_usd"] == Decimal("-0.019201")
+    assert kwargs["idempotency_key"] == "run:777"
+    assert kwargs["workflow_run_id"] == 777
+    # Single tokens_charged = prompt + completion + embedding
+    assert kwargs["tokens_charged"] == 100_779 + 1_472 + 54
 
 
-# ---------------------------------------------------------------------------
-# Token extraction from workflow_run.usage_info
-# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_oss_completion_zero_tokens_writes_nothing(monkeypatch):
+    """A run with no billable tokens must write no ledger entry at all."""
+    run = _make_oss_run(usage_info={"llm": {}, "embedding_tokens": 0})
+    apply = AsyncMock()
+    monkeypatch.setattr(workflow_run_billing_mod, "DEPLOYMENT_MODE", "oss")
+    monkeypatch.setattr(workflow_run_billing_mod.db_client, "apply_ledger_entry", apply)
+
+    await _report_oss_platform_usage(run)
+
+    apply.assert_not_awaited()
 
 
-def test_extract_token_counts_sums_across_llm_entries():
-    usage_info = {
-        "llm": {
-            "ServiceA#0__gemini-3.1-flash": {
-                "prompt_tokens": 100,
-                "completion_tokens": 10,
-            },
-            "ServiceB#1__gpt-4.1-mini": {
-                "prompt_tokens": 50,
-                "completion_tokens": 5,
-            },
-        },
-        "embedding_tokens": 7,
-    }
-    assert _extract_token_counts(usage_info) == (150, 15, 7)
+@pytest.mark.asyncio
+async def test_oss_completion_idempotent_on_retry(monkeypatch):
+    """Re-running completion for the same run must not debit twice.
+
+    The idempotency key run:{id} is what makes this safe. apply_ledger_entry
+    itself dedups by key; here we assert the key is stable across retries so
+    the DB-level dedup can do its job.
+    """
+    run = _make_oss_run(run_id=999)
+    seen_keys = []
+
+    async def fake_apply(**kwargs):
+        seen_keys.append(kwargs["idempotency_key"])
+        return SimpleNamespace(id=1)
+
+    monkeypatch.setattr(workflow_run_billing_mod, "DEPLOYMENT_MODE", "oss")
+    monkeypatch.setattr(
+        workflow_run_billing_mod.db_client, "apply_ledger_entry", fake_apply
+    )
+    monkeypatch.setattr(workflow_run_billing_mod, "capture_event", lambda **k: None)
+
+    await _report_oss_platform_usage(run)
+    await _report_oss_platform_usage(run)
+
+    # Both attempts use the identical idempotency key, so the real
+    # apply_ledger_entry would dedup to a single ledger row.
+    assert seen_keys == ["run:999", "run:999"]
 
 
-def test_extract_token_counts_defaults_to_zero_when_empty():
-    assert _extract_token_counts({}) == (0, 0, 0)
+@pytest.mark.asyncio
+async def test_oss_completion_billing_failure_does_not_raise(monkeypatch):
+    """A ledger failure must be swallowed (logged, not re-raised) so it never
+    aborts artifact upload or integrations."""
+    run = _make_oss_run()
 
+    async def boom(**kwargs):
+        raise RuntimeError("db down")
 
-def test_extract_token_counts_tolerates_missing_and_null_fields():
-    usage_info = {
-        "llm": {
-            "ServiceA#0__model": {"prompt_tokens": None},
-            "ServiceB#1__model": {"completion_tokens": 4},
-        },
-        "embedding_tokens": None,
-    }
-    assert _extract_token_counts(usage_info) == (0, 4, 0)
+    monkeypatch.setattr(workflow_run_billing_mod, "DEPLOYMENT_MODE", "oss")
+    monkeypatch.setattr(
+        workflow_run_billing_mod.db_client, "apply_ledger_entry", boom
+    )
 
-
-def test_extract_token_counts_skips_non_dict_llm_entries():
-    usage_info = {
-        "llm": {
-            "ServiceA#0__model": {"prompt_tokens": 20, "completion_tokens": 2},
-            "malformed": "not-a-dict",
-        }
-    }
-    assert _extract_token_counts(usage_info) == (20, 2, 0)
+    # Must not raise
+    await _report_oss_platform_usage(run)

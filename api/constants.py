@@ -206,3 +206,17 @@ SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "afterlife668@gmail.com")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 TUNER_BASE_URL = os.getenv("TUNER_BASE_URL", "https://api.usetuner.ai")
+
+# Credit Wallet Configuration
+# Internal secret for /internal/credits routes (separate from DOGRAH_DEVOPS_SECRET
+# so read-only diagnostic access doesn't grant money-moving permissions)
+DOGRAH_INTERNAL_SECRET = os.getenv("DOGRAH_INTERNAL_SECRET") or None
+# Flag to enable/disable credit balance enforcement for OSS workflow runs
+ENFORCE_CREDIT_BALANCE = os.getenv("ENFORCE_CREDIT_BALANCE", "false").lower() == "true"
+# Minimum balance threshold in USD - accounts at or below this are blocked
+# from starting new runs when enforcement is enabled
+from decimal import Decimal
+
+MINIMUM_WALLET_BALANCE_USD = Decimal(
+    os.getenv("MINIMUM_WALLET_BALANCE_USD", "0.00")
+)

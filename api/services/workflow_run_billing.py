@@ -5,42 +5,47 @@ For hosted deployments, Dograh reports completed platform usage to MPS.
 When a server-minted MPS correlation id exists, MPS uses model-service usage
 as the canonical duration. Otherwise Dograh reports the completed run duration.
 
-For OSS deployments, credits are tracked locally using the following formula:
-    credits = (
+For OSS deployments, usage is debited from the prepaid credit wallet in USD
+using the following formula:
+    cost_usd = (
         (prompt_tokens   * 0.15 / 1_000_000) +
         (completion_tokens * 0.60 / 1_000_000) +
         (embedding_tokens  * 0.02 / 1_000_000)
-    ) * 1.2 * 100
+    ) * 1.2
 
     Prices (per 1M tokens):
         Input  (prompt)     : $0.15
         Output (completion) : $0.60
         Embedding           : $0.02
     1.2x = 20% platform markup
-    *100 converts dollars → cents = credits (1 credit = 1 cent)
 
-Token counts are read from workflow_run.usage_info and accumulated in the
-OrganizationUsageCycleModel for the current calendar-month period.
+Token counts are read from workflow_run.usage_info. The cost is written as a
+negative ledger entry via apply_ledger_entry, keyed run:{workflow_run_id} for
+idempotency against task retries.
 """
 
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from loguru import logger
 
 from api.constants import DEPLOYMENT_MODE
 from api.db import db_client
-from api.enums import PostHogEvent
+from api.enums import CreditLedgerEntryType, PostHogEvent
 from api.services.managed_model_services import get_mps_correlation_id
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.posthog_client import capture_event
 
-# Pricing per 1M tokens (USD)
-_INPUT_PRICE_PER_1M = 0.15
-_OUTPUT_PRICE_PER_1M = 0.60
-_EMBED_PRICE_PER_1M = 0.02
-_PLATFORM_MARKUP = 1.2
-# 1 credit = 1 cent → multiply dollar cost by 100
-_DOLLARS_TO_CREDITS = 100
+# Pricing per 1M tokens (USD) — based on gpt-4o-mini rates.
+# Decimal throughout — never float — so the cost that lands in the wallet
+# ledger is exact.
+#   gpt-4o-mini: $0.15 input / $0.60 output per 1M tokens
+#   text-embedding-3-small: $0.02 per 1M tokens
+_INPUT_PRICE_PER_1M = Decimal("0.15")
+_OUTPUT_PRICE_PER_1M = Decimal("0.60")
+_EMBED_PRICE_PER_1M = Decimal("0.02")
+_PLATFORM_MARKUP = Decimal("1.2")
+_MILLION = Decimal("1000000")
 
 
 def _workflow_run_organization_id(workflow_run) -> int | None:
@@ -94,36 +99,43 @@ def _extract_token_counts(usage_info: dict[str, Any]) -> tuple[int, int, int]:
     return prompt_tokens, completion_tokens, embedding_tokens
 
 
-def _calculate_credits(
+def _calculate_cost_usd(
     prompt_tokens: int,
     completion_tokens: int,
     embedding_tokens: int,
-) -> float:
-    """Apply the platform billing formula and return credits to deduct.
+) -> Decimal:
+    """Apply the platform billing formula and return the USD cost to debit.
 
-    Formula:
-        credits = (
+    Formula (USD, not credits):
+        cost_usd = (
             (prompt_tokens     * INPUT_PRICE  / 1_000_000) +
             (completion_tokens * OUTPUT_PRICE / 1_000_000) +
             (embedding_tokens  * EMBED_PRICE  / 1_000_000)
-        ) * 1.2 * 100
+        ) * 1.2
+
+    The 1.2x platform markup is unchanged. Only the unit changed: the old
+    `* 100` credits conversion is gone — money is stored in USD now.
+    Quantized to 6 dp with ROUND_HALF_UP to match the ledger's Numeric(18,6).
     """
-    return (
-        (prompt_tokens     * _INPUT_PRICE_PER_1M  / 1_000_000) +
-        (completion_tokens * _OUTPUT_PRICE_PER_1M / 1_000_000) +
-        (embedding_tokens  * _EMBED_PRICE_PER_1M  / 1_000_000)
-    ) * _PLATFORM_MARKUP * _DOLLARS_TO_CREDITS
+    raw = (
+        (Decimal(prompt_tokens) * _INPUT_PRICE_PER_1M / _MILLION)
+        + (Decimal(completion_tokens) * _OUTPUT_PRICE_PER_1M / _MILLION)
+        + (Decimal(embedding_tokens) * _EMBED_PRICE_PER_1M / _MILLION)
+    )
+    return (raw * _PLATFORM_MARKUP).quantize(
+        Decimal("0.000001"), rounding=ROUND_HALF_UP
+    )
 
 
 async def _report_oss_platform_usage(workflow_run) -> None:
-    """Accumulate token usage into the local billing cycle for OSS mode.
+    """Debit the prepaid wallet ledger for a completed run in OSS mode.
 
-    Uses the platform formula:
-        credits = (
+    Uses the platform formula (USD):
+        cost_usd = (
             (prompt_tokens   * 0.15 / 1M) +
             (completion_tokens * 0.60 / 1M) +
             (embedding_tokens  * 0.02 / 1M)
-        ) * 1.2 * 100
+        ) * 1.2
     """
     organization_id = _workflow_run_organization_id(workflow_run)
     if organization_id is None:
@@ -143,7 +155,8 @@ async def _report_oss_platform_usage(workflow_run) -> None:
         )
         return
 
-    credits_to_add = _calculate_credits(prompt_tokens, completion_tokens, embedding_tokens)
+    cost_usd = _calculate_cost_usd(prompt_tokens, completion_tokens, embedding_tokens)
+    tokens_charged = prompt_tokens + completion_tokens + embedding_tokens
 
     # Extract model name for logging/PostHog (first LLM entry key)
     llm_entries = usage_info.get("llm") or {}
@@ -152,15 +165,26 @@ async def _report_oss_platform_usage(workflow_run) -> None:
     model_name = raw_model_key.split("__")[-1] if "__" in raw_model_key else raw_model_key
 
     try:
-        await db_client.add_oss_call_credits(organization_id, credits_to_add)
+        # Debit the wallet ledger. amount_usd is NEGATIVE (money leaving the
+        # wallet). The idempotency key run:{id} makes this safe against ARQ
+        # retries of the completion task — a retry finds the existing entry and
+        # does not debit again.
+        await db_client.apply_ledger_entry(
+            organization_id=organization_id,
+            entry_type=CreditLedgerEntryType.DEBIT_CALL,
+            amount_usd=-cost_usd,
+            idempotency_key=f"run:{workflow_run.id}",
+            workflow_run_id=workflow_run.id,
+            tokens_charged=tokens_charged,
+        )
         logger.info(
             "Recorded OSS usage for workflow run {}: "
-            "prompt={} output={} embed={} → {:.6f} credits",
+            "prompt={} output={} embed={} → ${} USD debited",
             workflow_run.id,
             prompt_tokens,
             completion_tokens,
             embedding_tokens,
-            credits_to_add,
+            cost_usd,
         )
     except Exception as e:
         logger.error(
@@ -182,7 +206,7 @@ async def _report_oss_platform_usage(workflow_run) -> None:
                 "completion_tokens": completion_tokens,
                 "embedding_tokens": embedding_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
-                "credits_used": round(credits_to_add, 6),
+                "cost_usd": float(cost_usd),
                 "model": model_name,
             },
         )

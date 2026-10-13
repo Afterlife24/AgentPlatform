@@ -26,20 +26,31 @@ export const ApiKeyErrorDialog = ({
 }: ApiKeyErrorDialogProps) => {
     const isBillingCreditsError = errorCode === 'insufficient_credits';
     const isServiceKeyOrgMismatch = errorCode === 'service_key_org_mismatch';
+    // Prepaid-wallet enforcement codes (api/services/quota_service.py). These are
+    // balance problems, not API-key problems, so they get the billing treatment:
+    // credit-card icon, a balance title, and a Billing action — not the default
+    // "API Configuration Error" / Model Configurations fallback.
+    const isWalletBalanceError =
+        errorCode === 'insufficient_balance' ||
+        errorCode === 'account_blocked' ||
+        errorCode === 'balance_check_failed';
     const isQuotaError = isBillingCreditsError || errorCode === 'quota_exceeded';
+    const isBillingLikeError = isQuotaError || isWalletBalanceError;
 
-    const title = isQuotaError
-        ? "Insufficient Credits"
-        : isServiceKeyOrgMismatch
-            ? "Service Token Account Mismatch"
-            : "API Configuration Error";
-    const icon = isQuotaError ? <CreditCard className="h-5 w-5 text-orange-500" /> : <Key className="h-5 w-5 text-red-500" />;
-    const buttonText = isBillingCreditsError
+    const title = isWalletBalanceError
+        ? (errorCode === 'account_blocked' ? "Account Suspended" : "Insufficient Balance")
+        : isQuotaError
+            ? "Insufficient Credits"
+            : isServiceKeyOrgMismatch
+                ? "Service Token Account Mismatch"
+                : "API Configuration Error";
+    const icon = isBillingLikeError ? <CreditCard className="h-5 w-5 text-orange-500" /> : <Key className="h-5 w-5 text-red-500" />;
+    const buttonText = isBillingLikeError
         ? "Go to Billing"
         : isServiceKeyOrgMismatch
             ? "Go to Developers"
             : "Go to Model Configurations";
-    const onNavigate = isBillingCreditsError
+    const onNavigate = isBillingLikeError
         ? onNavigateToBilling
         : isServiceKeyOrgMismatch
             ? onNavigateToDevelopers
