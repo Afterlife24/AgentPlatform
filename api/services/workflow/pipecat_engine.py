@@ -179,6 +179,10 @@ class PipecatEngine:
             None
         )
 
+        # Pipeline metrics aggregator — set via set_metrics_aggregator()
+        # after the aggregator is created in run_pipeline.
+        self._metrics_aggregator = None
+
     async def _get_organization_id(self) -> Optional[int]:
         """Get and cache the organization ID from workflow run."""
         if self._organization_id is None:
@@ -517,6 +521,12 @@ class PipecatEngine:
                     reranking_enabled=self._rag_reranking_enabled,
                     top_n_chunks=self._rag_top_n_chunks,
                 )
+
+                # Push embedding token count into the metrics aggregator
+                # so it ends up in usage_info for billing.
+                embedding_tokens = result.get("embedding_tokens", 0)
+                if embedding_tokens and self._metrics_aggregator is not None:
+                    self._metrics_aggregator.add_embedding_tokens(embedding_tokens)
 
                 await function_call_params.result_callback(result)
 
@@ -1072,6 +1082,14 @@ class PipecatEngine:
         which is useful when the task needs to be created after the engine.
         """
         self.task = task
+
+    def set_metrics_aggregator(self, aggregator) -> None:
+        """Set the pipeline metrics aggregator.
+
+        Called from run_pipeline after the aggregator is created so the engine
+        can push embedding token counts into it after each RAG retrieval.
+        """
+        self._metrics_aggregator = aggregator
 
     def set_audio_config(self, audio_config) -> None:
         """Set the audio configuration for the pipeline."""

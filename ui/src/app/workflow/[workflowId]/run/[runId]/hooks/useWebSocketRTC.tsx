@@ -36,6 +36,15 @@ const HANDLED_SERVICE_ERROR_TYPES = new Set([
     'invalid_service_key',
     'service_key_org_mismatch',
     'quota_check_failed',
+    // Prepaid-wallet enforcement codes from authorize_workflow_run_start
+    // (api/services/quota_service.py). Without these, the backend refuses the
+    // WebRTC test call with an `error` frame but the UI falls into the generic
+    // else-branch — it only logs and never tears down the connection, so the
+    // panel hangs on "Establishing Connection..." instead of blocking like the
+    // phone-call and text-chat paths do.
+    'insufficient_balance',
+    'account_blocked',
+    'balance_check_failed',
 ]);
 
 export const useWebSocketRTC = ({ workflowId, workflowRunId, accessToken, initialContextVariables, onNodeTransition }: UseWebSocketRTCProps) => {

@@ -87,6 +87,20 @@ jobs:
         working-directory: api/mcp_server/ts_validator
         run: npm install
 
+      - name: Assert a single Alembic head
+        working-directory: api
+        run: |
+          # A second migration head crash-loops the API container on startup
+          # and has taken production down once. Fail the build if the chain
+          # ever forks instead of discovering it at deploy time.
+          heads="$(alembic -c alembic.ini heads 2>/dev/null | grep -c '(head)')"
+          echo "Alembic heads found: $heads"
+          if [ "$heads" -ne 1 ]; then
+            echo "::error::Expected exactly one Alembic head, found $heads. Merge the migration branches before raising this PR."
+            alembic -c alembic.ini heads
+            exit 1
+          fi
+
       - name: Run pytest
         working-directory: api
         run: pytest tests/ -xvs

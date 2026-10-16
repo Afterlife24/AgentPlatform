@@ -747,11 +747,20 @@ def create_tts_service(
 
 
 def _migrate_deprecated_google_model(model: str) -> str:
-    """Google removed the ``gemini-2.0-flash*`` models. Transparently upgrade
-    any stored config that still references them to the 2.5 equivalent so old
-    user configurations keep working instead of failing at runtime."""
-    if model and model.startswith("gemini-2.0-flash"):
+    """Transparently upgrade deprecated Gemini model names so old stored
+    configurations keep working instead of failing at runtime."""
+    if not model:
+        return model
+    # gemini-2.0-flash* → gemini-2.5-flash* (removed by Google)
+    if model.startswith("gemini-2.0-flash"):
         migrated = model.replace("gemini-2.0-", "gemini-2.5-", 1)
+        logger.warning(
+            f"Google model '{model}' is no longer supported; using '{migrated}' instead"
+        )
+        return migrated
+    # gemini-2.5-flash* → gemini-3.5-flash (no longer available to new users)
+    if model.startswith("gemini-2.5-flash"):
+        migrated = "gemini-3.5-flash"
         logger.warning(
             f"Google model '{model}' is no longer supported; using '{migrated}' instead"
         )

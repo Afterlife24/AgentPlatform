@@ -53,6 +53,14 @@ class BaseEmbeddingService(ABC):
         """
         pass
 
+    def get_last_embedding_tokens(self) -> int:
+        """Return token count from the most recent embed_texts call.
+
+        Subclasses that track token usage should override this.
+        Returns 0 by default so callers never need to guard against None.
+        """
+        return 0
+
     @abstractmethod
     async def search_similar_chunks(
         self,

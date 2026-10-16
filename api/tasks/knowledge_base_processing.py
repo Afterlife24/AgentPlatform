@@ -13,10 +13,14 @@ import tempfile
 
 from loguru import logger
 
+from decimal import ROUND_HALF_UP, Decimal
+
 from api.db import db_client
 from api.db.models import KnowledgeBaseChunkModel
+from api.enums import CreditLedgerEntryType, PostHogEvent
 from api.services.gen_ai import build_embedding_service
 from api.services.mps_service_key_client import mps_service_key_client
+from api.services.posthog_client import capture_event
 from api.services.storage import storage_fs
 from api.services.workflow.tools.chunk_contextualiser import contextualise_chunks
 from api.services.workflow.tools.csv_table import (
@@ -38,8 +42,13 @@ async def _embed_texts_in_batches(
     texts: list[str],
     batch_size: int = EMBEDDING_BATCH_SIZE,
     concurrency: int = EMBEDDING_CONCURRENCY,
-) -> list[list[float]]:
-    """Generate embeddings in bounded batches with concurrent requests."""
+) -> tuple[list[list[float]], int]:
+    """Generate embeddings in bounded batches with concurrent requests.
+
+    Returns:
+        A tuple of (embeddings, total_embed_tokens) where total_embed_tokens
+        is the sum of tokens consumed across all batches — used for billing.
+    """
     import asyncio
 
     batches = [
@@ -49,6 +58,8 @@ async def _embed_texts_in_batches(
 
     # Pre-allocate result slots to maintain order
     results: list[list[list[float]] | None] = [None] * len(batches)
+    # Track tokens per batch slot so concurrent writes don't race
+    token_counts: list[int] = [0] * len(batches)
     semaphore = asyncio.Semaphore(concurrency)
 
     async def _process_batch(index: int, batch: list[str]):
@@ -57,6 +68,7 @@ async def _embed_texts_in_batches(
                 f"Generating embedding batch {index + 1}/{len(batches)} ({len(batch)} texts)"
             )
             results[index] = await embedding_service.embed_texts(batch)
+            token_counts[index] = embedding_service.get_last_embedding_tokens()
 
     # Run all batches concurrently (bounded by semaphore)
     await asyncio.gather(*[
@@ -68,7 +80,9 @@ async def _embed_texts_in_batches(
     for result in results:
         if result is not None:
             embeddings.extend(result)
-    return embeddings
+
+    total_embed_tokens = sum(token_counts)
+    return embeddings, total_embed_tokens
 
 
 async def process_knowledge_base_document(
@@ -99,6 +113,28 @@ async def process_knowledge_base_document(
     temp_file_path = None
 
     try:
+        # Prepaid-wallet safety net: refuse ingestion for an empty/blocked
+        # wallet before downloading or embedding (which cost money). The route
+        # already gates this, but a direct enqueue (reprocess, migration) could
+        # bypass it — so check here too. No-op when enforcement is off.
+        from api.services.quota_service import authorize_billable_action
+
+        quota = await authorize_billable_action(organization_id)
+        if not quota.has_quota:
+            logger.warning(
+                f"Document {document_id}: refused — {quota.error_code} "
+                f"(org {organization_id}). No tokens spent, no debit."
+            )
+            await db_client.update_document_status(
+                document_id,
+                "failed",
+                error_message=(
+                    quota.error_message
+                    or "Insufficient wallet balance to process this document."
+                ),
+            )
+            return
+
         await db_client.update_document_status(document_id, "processing")
 
         filename = s3_key.split("/")[-1]
@@ -377,7 +413,7 @@ async def process_knowledge_base_document(
             f"Generating embeddings for {len(chunk_texts)} chunks "
             f"using {embedding_service.get_model_id()}"
         )
-        embeddings = await _embed_texts_in_batches(embedding_service, chunk_texts)
+        embeddings, total_embed_tokens = await _embed_texts_in_batches(embedding_service, chunk_texts)
         if len(embeddings) != len(chunk_records):
             raise ValueError(
                 "Embedding count mismatch: "
@@ -398,6 +434,49 @@ async def process_knowledge_base_document(
             "completed",
             total_chunks=len(chunk_records),
             docling_metadata=docling_metadata,
+        )
+
+        # Debit the prepaid wallet for embedding tokens consumed during
+        # ingestion. This is independent of any call, so it bills right away.
+        # Priced at the embedding rate ($0.02 / 1M) with the same 1.2x markup.
+        # Keyed kb:{document_id} so reprocessing the same document never
+        # double-debits.
+        if total_embed_tokens > 0:
+            kb_cost_usd = (
+                (Decimal(total_embed_tokens) / Decimal("1000000"))
+                * Decimal("0.02")
+                * Decimal("1.2")
+            ).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+
+            logger.info(
+                f"Document {document_id}: debiting {total_embed_tokens} ingestion "
+                f"embed tokens → ${kb_cost_usd} USD for org {organization_id}"
+            )
+            await db_client.apply_ledger_entry(
+                organization_id=organization_id,
+                entry_type=CreditLedgerEntryType.DEBIT_CALL,
+                amount_usd=-kb_cost_usd,
+                idempotency_key=f"kb:{document_id}",
+                tokens_charged=total_embed_tokens,
+                memo=f"Knowledge base ingestion: document {document_id}",
+            )
+
+        # Fire PostHog event so ingestion token usage is visible in analytics.
+        # Uses created_by_provider_id as the distinct_id (same pattern as
+        # KNOWLEDGE_BASE_CREATED fired in the route handler).
+        credits_used = round((total_embed_tokens / 1_000_000) * 0.02 * 1.2 * 100, 6)
+        capture_event(
+            distinct_id=created_by_provider_id,
+            event=PostHogEvent.KNOWLEDGE_BASE_CHUNKED,
+            properties={
+                "document_id": document_id,
+                "organization_id": organization_id,
+                "filename": filename,
+                "total_chunks": len(chunk_records),
+                "embedding_tokens": total_embed_tokens,
+                "embedding_model": embedding_service.get_model_id(),
+                "credits_used": credits_used,
+            },
         )
 
         logger.info(
