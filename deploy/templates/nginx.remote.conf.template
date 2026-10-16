@@ -133,6 +133,16 @@ server {
         proxy_set_header X-Forwarded-Proto https;
     }
 
+    # Dashboard API proxy — routes /api/adapter/* to adapter backend.
+    # This is needed because Next.js rewrites don't work with basePath in standalone mode.
+    location /api/adapter/ {
+        proxy_pass http://whatsapp_adapter/adapter/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
     # Operator billing console (Phase 6/8). Namespaced under /adapter/ so it
     # never collides with the AgentX frontend's own /billing customer page
     # (served by the "/" catch-all below). nginx matches the most specific
