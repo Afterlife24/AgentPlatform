@@ -107,10 +107,25 @@ class OpenAIEmbeddingService(BaseEmbeddingService):
                 model=self.model_id,
                 **self._request_kwargs(),
             )
+            # Capture token usage reported by the API for billing tracking.
+            # For embeddings, total_tokens == prompt_tokens (no output tokens).
+            usage = getattr(response, "usage", None)
+            self._last_embedding_tokens: int = int(
+                getattr(usage, "total_tokens", 0) or 0
+            )
             return [item.embedding for item in response.data]
         except Exception as e:
             logger.error(f"Error generating OpenAI embeddings: {e}")
             raise
+
+    def get_last_embedding_tokens(self) -> int:
+        """Return token count from the most recent embed_texts call.
+
+        Returns the value reported by the OpenAI API (prompt_tokens ==
+        total_tokens for embeddings).  Returns 0 if no call has been made yet
+        or the provider did not report usage.
+        """
+        return getattr(self, "_last_embedding_tokens", 0)
 
     async def embed_query(self, query: str) -> List[float]:
         """Embed a single query text using OpenAI API.

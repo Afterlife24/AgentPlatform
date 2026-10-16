@@ -1,7 +1,8 @@
 from api.db.agent_trigger_client import AgentTriggerClient
-from api.db.csv_table_client import CsvTableClient
 from api.db.api_key_client import APIKeyClient
 from api.db.campaign_client import CampaignClient
+from api.db.credit_account_client import CreditAccountClient
+from api.db.csv_table_client import CsvTableClient
 from api.db.embed_token_client import EmbedTokenClient
 from api.db.folder_client import FolderClient
 from api.db.integration_client import IntegrationClient
@@ -47,6 +48,7 @@ class DBClient(
     TelephonyPhoneNumberClient,
     FolderClient,
     CsvTableClient,
+    CreditAccountClient,
 ):
     """
     Unified database client that combines all specialized database operations.
@@ -70,6 +72,7 @@ class DBClient(
     - ToolClient: handles tool operations for reusable HTTP API tools
     - KnowledgeBaseClient: handles knowledge base document and vector search operations
     - FolderClient: handles folder operations for grouping workflows (agents)
+    - CreditAccountClient: handles prepaid credit wallet and ledger operations
     """
 
     pass

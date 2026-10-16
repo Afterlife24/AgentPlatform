@@ -338,6 +338,11 @@ def _merge_usage_info(
             merged_section[key] = float(merged_section.get(key) or 0) + float(value)
         merged[section] = merged_section
 
+    # Accumulate embedding tokens across turns for billing
+    merged["embedding_tokens"] = int(merged.get("embedding_tokens") or 0) + int(
+        delta.get("embedding_tokens") or 0
+    )
+
     merged["call_duration_seconds"] = int(
         merged.get("call_duration_seconds") or 0
     ) + int(delta.get("call_duration_seconds") or 0)
@@ -634,6 +639,9 @@ async def execute_text_chat_pending_turn(
     # from the browser pipeline so TTS/recording helpers still have sane defaults.
     audio_config = create_audio_config(WorkflowRunMode.SMALLWEBRTC.value)
     pipeline_metrics_aggregator = PipelineMetricsAggregator()
+    # Give the engine a reference so embedding tokens from RAG calls
+    # are tracked for billing (same pattern as in run_pipeline.py).
+    engine.set_metrics_aggregator(pipeline_metrics_aggregator)
 
     # Stitch every per-turn pipeline of this session into one Langfuse trace by
     # handing each task the same remote parent context (derived from the run id).

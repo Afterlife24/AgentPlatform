@@ -16,6 +16,19 @@ from pipecat.metrics.metrics import (
     LLMUsageMetricsData,
     TTSUsageMetricsData,
 )
+
+# STTUsageMetricsData was added in a newer pipecat version (upstream commit
+# 2a8de52bb). The Dograh fork hasn't merged it yet. Define a placeholder class
+# so the isinstance() check compiles but NEVER matches any frame — STT metrics
+# are simply not tracked until the fork merges upstream.
+try:
+    from pipecat.metrics.metrics import STTUsageMetricsData
+except ImportError:
+
+    class STTUsageMetricsData:  # type: ignore[no-redef]
+        """Placeholder — pipecat fork doesn't have this class yet."""
+
+        pass
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 
@@ -32,6 +45,8 @@ class PipelineMetricsAggregator(FrameProcessor):
         self._llm_usage_metrics: Dict[str, LLMTokenUsage] = {}
         self._tts_usage_metrics: Dict[str, int] = defaultdict(int)
         self._stt_usage_metrics: Dict[str, float] = defaultdict(float)
+        # Embedding tokens from RAG calls (summed across all retrievals in a call)
+        self._embedding_tokens: int = 0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -48,6 +63,8 @@ class PipelineMetricsAggregator(FrameProcessor):
                     await self._handle_llm_usage_metrics(data)
                 elif isinstance(data, TTSUsageMetricsData):
                     await self._handle_tts_usage_metrics(data)
+                elif isinstance(data, STTUsageMetricsData):
+                    await self._handle_stt_usage_metrics(data)
 
         await self.push_frame(frame, direction)
 
@@ -101,6 +118,20 @@ class PipelineMetricsAggregator(FrameProcessor):
         self._tts_usage_metrics[key] += data.value
         # logger.debug(f"TTS usage metrics: {self._tts_usage_metrics}")
 
+    async def _handle_stt_usage_metrics(self, data: STTUsageMetricsData):
+        key = f"{data.processor}|||{data.model}"
+        self._stt_usage_metrics[key] += data.value
+        logger.debug(f"STT usage metrics: {self._stt_usage_metrics}")
+
+    def add_embedding_tokens(self, tokens: int) -> None:
+        """Accumulate embedding tokens from a RAG retrieval call.
+
+        Called by the engine each time retrieve_from_knowledge_base returns
+        so the total is available in the final usage_info.
+        """
+        self._embedding_tokens += int(tokens or 0)
+        logger.debug(f"Embedding tokens accumulated: {self._embedding_tokens} (+{tokens})")
+
     def get_llm_usage_metrics(self) -> Dict[str, LLMTokenUsage]:
         """Get the aggregated LLM usage metrics grouped by processor|||model."""
         return self._llm_usage_metrics
@@ -142,6 +173,7 @@ class PipelineMetricsAggregator(FrameProcessor):
             "llm": serialized_llm,
             "tts": dict(self._tts_usage_metrics),
             "stt": dict(self._stt_usage_metrics),
+            "embedding_tokens": self._embedding_tokens,
             "call_duration_seconds": self.get_call_duration(),
         }
 
@@ -150,5 +182,6 @@ class PipelineMetricsAggregator(FrameProcessor):
         self._llm_usage_metrics.clear()
         self._tts_usage_metrics.clear()
         self._stt_usage_metrics.clear()
+        self._embedding_tokens = 0
         self._start_time = None
         self._stop_time = None

@@ -371,3 +371,89 @@ async def test_client_factory(db_session):
                 app.dependency_overrides.pop(get_user, None)
 
     return _create_client_for_user
+
+
+@pytest.fixture
+async def test_organization(db_session):
+    """Create a test organization."""
+    from datetime import datetime, timezone
+
+    from api.db.models import OrganizationModel
+
+    org = OrganizationModel(
+        provider_id=f"test_org_{int(datetime.now(timezone.utc).timestamp())}",
+        created_at=datetime.now(timezone.utc),
+    )
+    async with db_session.async_session() as session:
+        session.add(org)
+        await session.commit()
+        await session.refresh(org)
+    return org
+
+
+@pytest.fixture
+async def test_api_key(db_session, test_organization):
+    """Create a test API key for the test organization."""
+    from api.utils.api_key import generate_api_key
+
+    raw_key, key_hash, key_prefix = generate_api_key()
+
+    from api.db.models import APIKeyModel
+
+    api_key = APIKeyModel(
+        organization_id=test_organization.id,
+        name="Test API Key",
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        is_active=True,
+    )
+    async with db_session.async_session() as session:
+        session.add(api_key)
+        await session.commit()
+        await session.refresh(api_key)
+
+    return {"model": api_key, "raw_key": raw_key}
+
+
+@pytest.fixture
+async def test_user_with_org(db_session, test_organization):
+    """Create a test user with a selected organization."""
+    from datetime import datetime, timezone
+
+    from api.db.models import UserModel
+
+    user = UserModel(
+        provider_id=f"test_user_{int(datetime.now(timezone.utc).timestamp())}",
+        email="testuser@example.com",
+        selected_organization_id=test_organization.id,
+        created_at=datetime.now(timezone.utc),
+        is_superuser=False,
+    )
+    async with db_session.async_session() as session:
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+    return user, test_organization
+
+
+@pytest.fixture
+async def test_user_no_org(db_session):
+    """Create a test user with no selected organization."""
+    from datetime import datetime, timezone
+
+    from api.db.models import UserModel
+
+    user = UserModel(
+        provider_id=f"test_user_no_org_{int(datetime.now(timezone.utc).timestamp())}",
+        email="nouserorg@example.com",
+        selected_organization_id=None,
+        created_at=datetime.now(timezone.utc),
+        is_superuser=False,
+    )
+    async with db_session.async_session() as session:
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+
+    return user

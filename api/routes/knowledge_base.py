@@ -20,6 +20,7 @@ from api.schemas.knowledge_base import (
 from api.sdk_expose import sdk_expose
 from api.services.auth.depends import get_user
 from api.services.posthog_client import capture_event
+from api.services.quota_service import authorize_billable_action
 from api.services.storage import storage_fs
 from api.tasks.arq import enqueue_job
 from api.tasks.function_names import FunctionNames
@@ -114,6 +115,18 @@ async def process_document(
     """
 
     try:
+        # Prepaid-wallet gate: knowledge-base ingestion costs embedding tokens
+        # and debits the wallet, so refuse it up front when the balance is
+        # empty/blocked — before any document record, chunking, embedding, or
+        # debit happens. Same check calls use; no-op when enforcement is off.
+        quota = await authorize_billable_action(user.selected_organization_id)
+        if not quota.has_quota:
+            raise HTTPException(
+                status_code=402,
+                detail=quota.error_message
+                or "Your account balance is empty. Please top up to upload documents.",
+            )
+
         # Extract filename from s3_key
         filename = request.s3_key.split("/")[-1]
 

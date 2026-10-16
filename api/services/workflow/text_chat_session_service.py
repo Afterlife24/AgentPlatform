@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from loguru import logger
+
 from api.db import db_client
 from api.db.models import WorkflowRunTextSessionModel
 from api.db.workflow_run_text_session_client import (
@@ -255,6 +257,30 @@ async def execute_pending_text_chat_turn(
         state=execution.state,
         is_completed=execution.is_completed,
     )
+
+    # When the chat session has finished, trigger the same completion task calls
+    # use (api/services/pipecat/event_handlers.py). It runs post-run integrations
+    # AND the OSS wallet debit. Without this, text chats completed but were never
+    # billed, while calls were. Enqueue only on completion so an in-progress turn
+    # is not billed mid-session.
+    if execution.is_completed:
+        try:
+            from api.tasks.arq import enqueue_job
+            from api.tasks.function_names import FunctionNames
+
+            await enqueue_job(
+                FunctionNames.PROCESS_WORKFLOW_COMPLETION,
+                run_id,
+            )
+        except Exception as e:
+            # Never let a billing/enqueue hiccup break the chat response. The
+            # debit is idempotent (key run:{id}); a missed enqueue just means
+            # this run isn't billed, matching the call path's fail-safe stance.
+            logger.warning(
+                "Failed to enqueue workflow completion for text chat run {}: {}",
+                run_id,
+                e,
+            )
 
     return await _reload_text_chat_session(run_id)
 
