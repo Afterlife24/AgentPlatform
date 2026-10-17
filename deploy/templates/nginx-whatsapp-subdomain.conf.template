@@ -1,13 +1,6 @@
 # WhatsApp Dashboard Subdomain Configuration
 # Serves dashboard at https://adapter.afterlife.org.in
-
-upstream whatsapp_dashboard {
-    server whatsapp-dashboard:3001;
-}
-
-upstream whatsapp_adapter {
-    server whatsapp-adapter:8080;
-}
+# Note: upstreams are defined in default.conf, so we don't redefine them here
 
 # HTTP redirect to HTTPS
 server {
