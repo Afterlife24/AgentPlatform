@@ -49,9 +49,11 @@ server {
     }
 
     # API proxy for backend calls
-    # Dashboard calls https://devagents.afterlife.org.in/adapter/* for API
-    # So this is just for direct testing
+    # Dashboard calls /adapter/*, nginx strips /adapter and forwards to backend
     location /adapter/ {
+        # Strip /adapter prefix before proxying (backend expects /health, /auth/login, etc.)
+        rewrite ^/adapter/(.*) /$1 break;
+        
         proxy_pass http://whatsapp_adapter;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
