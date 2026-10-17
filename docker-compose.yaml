@@ -229,6 +229,7 @@ services:
       FORCE_TURN_RELAY: "${FORCE_TURN_RELAY:-false}"
 
       OSS_JWT_SECRET: "${OSS_JWT_SECRET:?OSS_JWT_SECRET must be set to a strong secret}"
+      DOGRAH_INTERNAL_SECRET: "${DOGRAH_INTERNAL_SECRET:-}"
 
       # Telemetry
       ENABLE_TELEMETRY: "${ENABLE_TELEMETRY:-true}"
@@ -284,6 +285,7 @@ services:
       PUBLIC_HOST: "${PUBLIC_HOST:-}"
       BACKEND_API_ENDPOINT: "${BACKEND_API_ENDPOINT:-}"
       OSS_JWT_SECRET: "${OSS_JWT_SECRET:?OSS_JWT_SECRET must be set to a strong secret}"
+      DOGRAH_INTERNAL_SECRET: "${DOGRAH_INTERNAL_SECRET:-}"
       ENABLE_TELEMETRY: "${ENABLE_TELEMETRY:-true}"
       POSTHOG_API_KEY: "${POSTHOG_API_KEY}"
       POSTHOG_HOST: "${POSTHOG_HOST}"

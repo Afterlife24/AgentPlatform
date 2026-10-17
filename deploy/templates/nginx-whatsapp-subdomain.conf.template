@@ -48,12 +48,10 @@ server {
         proxy_send_timeout 3600s;
     }
 
-    # API proxy for backend calls
-    # Dashboard calls /adapter/*, nginx strips /adapter and forwards to backend
+    # API proxy for backend calls.
+    # Backend routes already include the /adapter/ prefix, so pass the path
+    # through unchanged (no rewrite).
     location /adapter/ {
-        # Strip /adapter prefix before proxying (backend expects /health, /auth/login, etc.)
-        rewrite ^/adapter/(.*) /$1 break;
-        
         proxy_pass http://whatsapp_adapter;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
