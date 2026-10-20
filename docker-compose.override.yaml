@@ -32,6 +32,7 @@ services:
 
   minio:
     restart: unless-stopped
+    user: root
 
   nginx:
     restart: unless-stopped
@@ -90,8 +91,9 @@ services:
       ENFORCE_CREDIT_BALANCE: "${ENFORCE_CREDIT_BALANCE:-false}"
       # Balance at or below which a run is refused when enforcement is on.
       MINIMUM_WALLET_BALANCE_USD: "${MINIMUM_WALLET_BALANCE_USD:-0.00}"
-    # Use the local startup script baked into the image at build time
-    # (adds --proxy-headers to uvicorn for Twilio signature validation behind nginx)
+    volumes:
+      - ./scripts/start_services_docker_local.sh:/app/scripts/start_services_docker_local.sh:ro
+      - ./api:/app/api
     command: ["./scripts/start_services_docker_local.sh"]
 
   # Same image for the ARQ worker (built once, reused)
@@ -202,5 +204,17 @@ services:
       - "3001:3001"
     depends_on:
       - whatsapp-adapter
+    networks:
+      - app-network
+
+  # agentX Consultancy — Vite/React static site served on port 3002
+  agentx-consultancy:
+    build:
+      context: ../agentX_consultancy
+      dockerfile: Dockerfile
+    container_name: agentx_consultancy
+    restart: unless-stopped
+    ports:
+      - "3002:80"
     networks:
       - app-network

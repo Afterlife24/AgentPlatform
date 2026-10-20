@@ -65,6 +65,11 @@ export default function CreateWorkflowPage() {
             if (response.data?.id) {
                 setWorkflowId(String(response.data.id));
                 setShowSuccessModal(true);
+            } else if (response.error) {
+                const detail = (response.error as { detail?: string })?.detail;
+                setError(detail || 'Failed to create workflow. Please check details and try again.');
+            } else {
+                setError('Failed to create workflow. Please try again.');
             }
         } catch (err) {
             setError('Failed to create workflow. Please try again.');

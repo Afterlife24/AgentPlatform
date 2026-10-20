@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import time
 from typing import Optional
 
 import aiohttp
@@ -10,6 +11,10 @@ from loguru import logger
 
 class TunnelURLProvider:
     """Provider for getting tunnel URLs from cloudflared service."""
+
+    _cached_urls: Optional[tuple[str, str]] = None
+    _last_check: float = 0.0
+    _CACHE_TTL: float = 30.0  # cache both positive and negative results for 30s
 
     @classmethod
     async def get_tunnel_urls(cls) -> tuple[str, str]:
@@ -22,15 +27,23 @@ class TunnelURLProvider:
         Raises:
             ValueError: If no tunnel URL can be determined
         """
+        now = time.monotonic()
+        if now - cls._last_check < cls._CACHE_TTL:
+            if cls._cached_urls:
+                return cls._cached_urls
+            raise ValueError("No tunnel URL available (cached).")
 
+        cls._last_check = now
         try:
             # Try to get URL from cloudflared metrics
             urls = await cls._get_cloudflared_urls()
             if urls:
+                cls._cached_urls = urls
                 return urls
         except Exception as e:
-            logger.warning(f"Failed to get tunnel URL from cloudflared: {e}")
+            logger.debug(f"Failed to get tunnel URL from cloudflared: {e}")
 
+        cls._cached_urls = None
         raise ValueError(
             "No tunnel URL available. Please set BACKEND_API_ENDPOINT environment "
             "variable or ensure cloudflared service is running."
@@ -49,12 +62,11 @@ class TunnelURLProvider:
             # The service name in docker-compose is 'cloudflared'
             metrics_url = "http://cloudflared:2000/metrics"
 
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    metrics_url, timeout=aiohttp.ClientTimeout(total=5)
-                ) as response:
+            timeout = aiohttp.ClientTimeout(total=0.5, connect=0.5)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(metrics_url) as response:
                     if response.status != 200:
-                        logger.warning(
+                        logger.debug(
                             f"Cloudflared metrics returned status {response.status}"
                         )
                         return None
@@ -81,15 +93,16 @@ class TunnelURLProvider:
                         )
                         return f"https://{hostname}", f"wss://{hostname}"
 
-                    logger.warning("Could not find tunnel URL in cloudflared metrics")
+                    logger.debug("Could not find tunnel URL in cloudflared metrics")
                     return None
 
         except asyncio.TimeoutError:
-            logger.warning("Timeout connecting to cloudflared metrics endpoint")
+            logger.debug("Timeout connecting to cloudflared metrics endpoint")
             return None
         except aiohttp.ClientError as e:
-            logger.warning(f"Error connecting to cloudflared: {e}")
+            logger.debug(f"Error connecting to cloudflared: {e}")
             return None
         except Exception as e:
-            logger.error(f"Unexpected error getting cloudflared URL: {e}")
+            logger.debug(f"Unexpected error getting cloudflared URL: {e}")
             return None
+

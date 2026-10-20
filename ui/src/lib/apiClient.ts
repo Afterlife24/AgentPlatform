@@ -72,4 +72,19 @@ export function setupAuthInterceptor(apiClient: Client, getAccessToken: () => Pr
         }
         return request;
     });
+
+    apiClient.interceptors.response.use(async (response) => {
+        if (response.status === 401) {
+            if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/auth/')) {
+                try {
+                    await fetch('/api/auth/logout', { method: 'POST' });
+                } catch {
+                    // Ignore logout failure
+                }
+                window.location.href = '/auth/login';
+            }
+        }
+        return response;
+    });
 }
+

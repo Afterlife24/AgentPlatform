@@ -489,14 +489,42 @@ async def create_workflow_from_template(
         HTTPException: If MPS API call fails
     """
     try:
+        # Ensure user has an organization
+        if not user.selected_organization_id:
+            org_provider_id = f"org_{user.provider_id}"
+            org, _ = await db_client.get_or_create_organization_by_provider_id(
+                org_provider_id=org_provider_id, user_id=user.id
+            )
+            await db_client.add_user_to_organization(user.id, org.id)
+            await db_client.update_user_selected_organization(user.id, org.id)
+            user.selected_organization_id = org.id
+
         # Call MPS API to generate workflow using the client
         if DEPLOYMENT_MODE == "oss":
-            workflow_data = await mps_service_key_client.call_workflow_api(
-                call_type=request.call_type.upper(),
-                use_case=request.use_case,
-                activity_description=request.activity_description,
-                created_by=str(user.provider_id),
-            )
+            try:
+                workflow_data = await mps_service_key_client.call_workflow_api(
+                    call_type=request.call_type.upper(),
+                    use_case=request.use_case,
+                    activity_description=request.activity_description,
+                    created_by=str(user.provider_id),
+                )
+            except HTTPStatusError as err:
+                # If key was missing/invalid, try provisioning one and retry once
+                if err.response.status_code in (401, 403):
+                    from api.services.auth.depends import create_user_configuration_with_mps_key
+                    mps_config = await create_user_configuration_with_mps_key(
+                        user.id, user.selected_organization_id, user.provider_id
+                    )
+                    if mps_config:
+                        await db_client.update_user_configuration(user.id, mps_config)
+                    workflow_data = await mps_service_key_client.call_workflow_api(
+                        call_type=request.call_type.upper(),
+                        use_case=request.use_case,
+                        activity_description=request.activity_description,
+                        created_by=str(user.provider_id),
+                    )
+                else:
+                    raise
         else:
             if not user.selected_organization_id:
                 raise HTTPException(status_code=400, detail="No organization selected")
@@ -568,9 +596,12 @@ async def create_workflow_from_template(
         raise
     except HTTPStatusError as e:
         logger.error(f"MPS API error: {e}")
+        status_code = e.response.status_code if hasattr(e, "response") else 500
+        if status_code in (401, 403):
+            status_code = 502
         raise HTTPException(
-            status_code=e.response.status_code if hasattr(e, "response") else 500,
-            detail=str(e),
+            status_code=status_code,
+            detail=f"Model Provider Service error: {str(e)}",
         )
     except Exception as e:
         logger.error(f"Unexpected error creating workflow from template: {e}")
