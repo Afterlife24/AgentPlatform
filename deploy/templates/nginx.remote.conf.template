@@ -5,6 +5,11 @@ upstream whatsapp_adapter {
     server whatsapp-adapter:8080;
 }
 
+# WhatsApp dashboard — Next.js app on port 3001.
+upstream whatsapp_dashboard {
+    server whatsapp-dashboard:3001;
+}
+
 server {
     listen 80;
     server_name __DOGRAH_PUBLIC_HOST__;
@@ -126,6 +131,38 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-Proto https;
+    }
+
+    # NOTE: do NOT add a bare `location /api/` block here. /api/* (other than
+    # /api/v1/) belongs to the AgentX Next.js UI (e.g. /api/config/version,
+    # /api/auth/*); proxying it to the adapter breaks the UI's backend check.
+
+    # Operator billing console (Phase 6/8). Namespaced under /adapter/ so it
+    # never collides with the AgentX frontend's own /billing customer page
+    # (served by the "/" catch-all below). nginx matches the most specific
+    # prefix. Do NOT add a bare /billing block — it would silently route
+    # customers to the adapter instead of the frontend.
+    location /adapter/ {
+        proxy_pass http://whatsapp_adapter;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    # WhatsApp adapter dashboard UI (Next.js app on port 3001).
+    # This MUST come before the catch-all "/" location.
+    location /dashboard/whatsapp {
+        proxy_pass http://whatsapp_dashboard;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        
+        # Next.js WebSocket for HMR
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
 
     location / {

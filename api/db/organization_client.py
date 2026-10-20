@@ -24,6 +24,45 @@ class OrganizationClient(BaseDBClient):
             )
             return result.scalars().first()
 
+    async def list_organizations_with_email(self) -> list[dict]:
+        """List every organization with a representative owner email.
+
+        Returns one row per org: {organization_id, email}. The email is the
+        account holder's — a user whose selected_organization_id is this org
+        (lowest user id first = the creator). Orgs with no such user still
+        appear, with email=None.
+
+        Used by the operator billing console to populate the org picker.
+        """
+        from sqlalchemy import func
+
+        from api.db.models import UserModel
+
+        async with self.async_session() as session:
+            # For each org, the lowest user id that selected it (the creator).
+            owner_subq = (
+                select(
+                    UserModel.selected_organization_id.label("org_id"),
+                    func.min(UserModel.id).label("owner_user_id"),
+                )
+                .where(UserModel.selected_organization_id.isnot(None))
+                .group_by(UserModel.selected_organization_id)
+                .subquery()
+            )
+
+            result = await session.execute(
+                select(OrganizationModel.id, UserModel.email)
+                .outerjoin(
+                    owner_subq, owner_subq.c.org_id == OrganizationModel.id
+                )
+                .outerjoin(UserModel, UserModel.id == owner_subq.c.owner_user_id)
+                .order_by(OrganizationModel.id)
+            )
+            return [
+                {"organization_id": org_id, "email": email}
+                for org_id, email in result.all()
+            ]
+
     async def get_or_create_organization_by_provider_id(
         self, org_provider_id: str, user_id: int
     ) -> tuple[OrganizationModel, bool]:

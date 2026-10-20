@@ -1,9 +1,9 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 from loguru import logger
 from pydantic import ValidationError
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.future import select
 
@@ -190,6 +190,50 @@ class UserClient(BaseDBClient):
             await session.execute(stmt)
             await session.commit()
 
+    async def get_primary_user_for_organization(
+        self, organization_id: int
+    ) -> UserModel | None:
+        """Return the primary (account-holder) user for an organization.
+
+        Used to resolve an owner email when an account is looked up by API key
+        or org id (which otherwise carry no user identity). "Primary" is defined
+        as:
+          1. a user whose selected_organization_id is this org (the active
+             account holder), lowest id first (the creator), else
+          2. any member via the organization_users association, lowest id first.
+
+        Returns None if the organization has no users at all.
+        """
+        from api.db.models import organization_users_association
+
+        async with self.async_session() as session:
+            # Prefer the active account holder(s).
+            result = await session.execute(
+                select(UserModel)
+                .where(UserModel.selected_organization_id == organization_id)
+                .order_by(UserModel.id)
+                .limit(1)
+            )
+            user = result.scalars().first()
+            if user is not None:
+                return user
+
+            # Fall back to any member of the org.
+            result = await session.execute(
+                select(UserModel)
+                .join(
+                    organization_users_association,
+                    organization_users_association.c.user_id == UserModel.id,
+                )
+                .where(
+                    organization_users_association.c.organization_id
+                    == organization_id
+                )
+                .order_by(UserModel.id)
+                .limit(1)
+            )
+            return result.scalars().first()
+
     async def get_user_by_email(self, email: str) -> UserModel | None:
         """Fetch a user by their email address (case-insensitive).
 
@@ -219,3 +263,109 @@ class UserClient(BaseDBClient):
             await session.commit()
             await session.refresh(user)
             return user
+
+    async def save_otp(self, email: str, otp: str, purpose: str, expires_at: datetime) -> None:
+        """Store an OTP code against a user record (or a pending-registration placeholder)."""
+        normalized = email.lower()
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(UserModel).where(func.lower(UserModel.email) == normalized)
+            )
+            user = result.scalars().first()
+
+            if user is None:
+                user = UserModel(
+                    provider_id=f"pending_{int(datetime.now(timezone.utc).timestamp())}_{uuid.uuid4()}",
+                    email=normalized,
+                )
+                session.add(user)
+                await session.flush()
+
+            # Set OTP fields directly on the ORM object — avoids a separate UPDATE
+            user.otp_code = otp
+            user.otp_expires_at = expires_at
+            user.otp_purpose = purpose
+            await session.commit()
+
+    async def verify_otp(self, email: str, otp: str, purpose: str) -> bool:
+        """Return True if the OTP matches, has the right purpose, and hasn't expired."""
+        normalized = email.lower()
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(UserModel).where(func.lower(UserModel.email) == normalized)
+            )
+            user = result.scalars().first()
+            if not user:
+                return False
+            if user.otp_code != otp:
+                return False
+            if user.otp_purpose != purpose:
+                return False
+            if not user.otp_expires_at:
+                return False
+            expires = user.otp_expires_at
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=UTC)
+            if expires < datetime.now(UTC):
+                return False
+            return True
+
+    async def clear_otp(self, email: str) -> None:
+        """Clear OTP fields after successful use."""
+        normalized = email.lower()
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(UserModel).where(func.lower(UserModel.email) == normalized)
+            )
+            user = result.scalars().first()
+            if user:
+                user.otp_code = None
+                user.otp_expires_at = None
+                user.otp_purpose = None
+                await session.commit()
+
+    async def set_password(self, email: str, password_hash: str) -> None:
+        """Update the password hash for a user (used after OTP-verified reset)."""
+        normalized = email.lower()
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(UserModel).where(func.lower(UserModel.email) == normalized)
+            )
+            user = result.scalars().first()
+            if user:
+                user.password_hash = password_hash
+                await session.commit()
+
+    async def complete_signup(
+        self, email: str, password_hash: str, name: str | None = None
+    ) -> UserModel:
+        """Finalize a stub user created during OTP send by setting the password hash."""
+        normalized = email.lower()
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(UserModel).where(func.lower(UserModel.email) == normalized)
+            )
+            user = result.scalars().first()
+
+            if user:
+                new_provider_id = f"oss_{int(datetime.now(timezone.utc).timestamp())}_{uuid.uuid4()}"
+                # Update fields directly on the ORM object — no second query needed
+                user.password_hash = password_hash
+                user.provider_id = new_provider_id
+                user.otp_code = None
+                user.otp_expires_at = None
+                user.otp_purpose = None
+                await session.commit()
+                await session.refresh(user)
+                return user
+            else:
+                # No stub — create fresh
+                user = UserModel(
+                    provider_id=f"oss_{int(datetime.now(timezone.utc).timestamp())}_{uuid.uuid4()}",
+                    email=normalized,
+                    password_hash=password_hash,
+                )
+                session.add(user)
+                await session.commit()
+                await session.refresh(user)
+                return user

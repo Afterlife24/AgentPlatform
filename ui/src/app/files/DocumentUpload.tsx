@@ -14,6 +14,7 @@ import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { useAppConfig } from '@/context/AppConfigContext';
+import { detailFromError } from '@/lib/apiError';
 import logger from '@/lib/logger';
 
 interface DocumentUploadProps {
@@ -141,7 +142,14 @@ export default function DocumentUpload({ onUploadSuccess }: DocumentUploadProps)
       });
 
       if (processResponse.error) {
-        throw new Error('Failed to trigger processing');
+        // Surface the backend's real message. For an empty/blocked wallet the
+        // route returns 402 with a clear balance message in `detail` — show
+        // that verbatim rather than a vague "Failed to trigger processing".
+        // This is the safety net if the balance drops after the page loaded;
+        // the up-front block dialog on the Files page is the primary guard.
+        throw new Error(
+          detailFromError(processResponse.error, 'Failed to trigger processing'),
+        );
       }
 
       setUploadProgress(100);

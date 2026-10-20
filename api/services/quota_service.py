@@ -9,7 +9,11 @@ from typing import Any
 
 from loguru import logger
 
-from api.constants import DEPLOYMENT_MODE
+from api.constants import (
+    DEPLOYMENT_MODE,
+    ENFORCE_CREDIT_BALANCE,
+    MINIMUM_WALLET_BALANCE_USD,
+)
 from api.db import db_client
 from api.db.models import UserModel
 from api.services.configuration.ai_model_configuration import (
@@ -355,6 +359,63 @@ async def _authorize_oss_managed_v2_correlation(
     return QuotaCheckResult(has_quota=True)
 
 
+class WalletUnavailableError(Exception):
+    """Raised when the prepaid wallet balance cannot be determined.
+
+    This is deliberately a distinct exception type so authorize_workflow_run_start
+    can catch it *before* its fail-open catch-all and refuse the run. A plain
+    exception here would be swallowed by the catch-all and turned into a free
+    call — the exact opposite of what enforcement must do (R6.8).
+    """
+
+
+async def _authorize_oss_wallet_balance(
+    organization_id: int | None,
+) -> QuotaCheckResult:
+    """Authorize an OSS run against the prepaid wallet balance.
+
+    Returns a refusing QuotaCheckResult for a blocked account or an empty
+    balance. Raises WalletUnavailableError when the balance cannot be read, so
+    the caller fails closed rather than open.
+
+    The comparison is `<=`, not `<`: with the default threshold of 0.00, a
+    balance of exactly zero is refused (see the truth table in requirements.md).
+    """
+    if organization_id is None:
+        raise WalletUnavailableError("workflow has no organization_id")
+
+    try:
+        account = await db_client.get_account(organization_id)
+    except Exception as e:
+        raise WalletUnavailableError(str(e)) from e
+
+    if account is None:
+        raise WalletUnavailableError(
+            f"no credit account for org {organization_id}"
+        )
+
+    if account.is_blocked:
+        return QuotaCheckResult(
+            has_quota=False,
+            error_code="account_blocked",
+            error_message=(
+                "Your account has been suspended. Please contact support."
+            ),
+        )
+
+    if account.balance_usd <= MINIMUM_WALLET_BALANCE_USD:
+        return QuotaCheckResult(
+            has_quota=False,
+            error_code="insufficient_balance",
+            error_message=(
+                "Your account balance is empty. Please contact support to top up "
+                "before starting a new call or chat."
+            ),
+        )
+
+    return QuotaCheckResult(has_quota=True)
+
+
 async def authorize_workflow_run_start(
     *,
     workflow_id: int,
@@ -415,6 +476,14 @@ async def authorize_workflow_run_start(
             if hosted_enforced or not hosted_result.has_quota:
                 return hosted_result
 
+        # Prepaid wallet enforcement (OSS only, behind the flag). Runs before the
+        # Dograh-key logic so an empty wallet refuses the run regardless of keys.
+        # With the flag off the balance is never read.
+        if DEPLOYMENT_MODE == "oss" and ENFORCE_CREDIT_BALANCE:
+            wallet = await _authorize_oss_wallet_balance(workflow.organization_id)
+            if not wallet.has_quota:
+                return wallet
+
         dograh_api_keys = _dograh_api_keys(user_config)
         if not dograh_api_keys:
             return QuotaCheckResult(has_quota=True)
@@ -438,7 +507,51 @@ async def authorize_workflow_run_start(
 
         return QuotaCheckResult(has_quota=True)
 
+    except WalletUnavailableError as e:
+        # Fail CLOSED. Must come before the catch-all below — Python matches
+        # except clauses in source order. If this fell through to the catch-all
+        # it would return has_quota=True and turn a transient DB error into a
+        # free call (R6.8).
+        logger.error("Balance check failed for workflow {}: {}", workflow_id, e)
+        return QuotaCheckResult(
+            has_quota=False,
+            error_code="balance_check_failed",
+            error_message="Could not verify your balance. Please try again.",
+        )
     except Exception as e:
         logger.error(f"Error during quota check: {str(e)}")
         # On unexpected error, allow the call to proceed
         return QuotaCheckResult(has_quota=True)
+
+
+async def authorize_billable_action(organization_id: int | None) -> QuotaCheckResult:
+    """Authorize a non-call billable action (e.g. knowledge-base ingestion).
+
+    Knowledge-base processing costs embedding tokens and debits the wallet, but
+    it runs outside authorize_workflow_run_start. This is the shared gate for
+    those paths so they refuse an empty/blocked wallet the same way calls do.
+
+    Mirrors the call path exactly:
+      - only enforces for OSS with ENFORCE_CREDIT_BALANCE on;
+      - reuses _authorize_oss_wallet_balance (blocked -> account_blocked,
+        balance <= threshold -> insufficient_balance);
+      - fails CLOSED: if the balance can't be read, the action is refused.
+
+    With the flag off, returns has_quota=True without reading the balance.
+    """
+    if DEPLOYMENT_MODE != "oss" or not ENFORCE_CREDIT_BALANCE:
+        return QuotaCheckResult(has_quota=True)
+
+    try:
+        return await _authorize_oss_wallet_balance(organization_id)
+    except WalletUnavailableError as e:
+        logger.error(
+            "Balance check failed for billable action (org {}): {}",
+            organization_id,
+            e,
+        )
+        return QuotaCheckResult(
+            has_quota=False,
+            error_code="balance_check_failed",
+            error_message="Could not verify your balance. Please try again.",
+        )

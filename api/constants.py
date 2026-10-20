@@ -199,6 +199,12 @@ FORCE_TURN_RELAY = os.getenv("FORCE_TURN_RELAY", "false").lower() == "true"
 OSS_JWT_SECRET = os.getenv("OSS_JWT_SECRET", "change-me-in-production")
 OSS_JWT_EXPIRY_HOURS = int(os.getenv("OSS_JWT_EXPIRY_HOURS", "720"))  # 30 days
 
+# Gmail SMTP for OTP emails
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "afterlife668@gmail.com")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+
 TUNER_BASE_URL = os.getenv("TUNER_BASE_URL", "https://api.usetuner.ai")
 
 # Relational Dataset Tool configuration
@@ -215,3 +221,17 @@ RELATIONAL_DATASET_ACQUISITION_TIMEOUT_MS = int(os.getenv("RELATIONAL_DATASET_AC
 RELATIONAL_DATASET_CONCURRENT_LOADS = int(os.getenv("RELATIONAL_DATASET_CONCURRENT_LOADS", "2"))
 RELATIONAL_DATASET_SYNC_LOAD_DURATION_MS = int(os.getenv("RELATIONAL_DATASET_SYNC_LOAD_DURATION_MS", "10000"))
 RELATIONAL_DATASET_ORG_STORAGE_CAP_BYTES = int(os.getenv("RELATIONAL_DATASET_ORG_STORAGE_CAP_BYTES", "5000000000"))
+
+# Credit Wallet Configuration
+# Internal secret for /internal/credits routes (separate from DOGRAH_DEVOPS_SECRET
+# so read-only diagnostic access doesn't grant money-moving permissions)
+DOGRAH_INTERNAL_SECRET = os.getenv("DOGRAH_INTERNAL_SECRET") or None
+# Flag to enable/disable credit balance enforcement for OSS workflow runs
+ENFORCE_CREDIT_BALANCE = os.getenv("ENFORCE_CREDIT_BALANCE", "false").lower() == "true"
+# Minimum balance threshold in USD - accounts at or below this are blocked
+# from starting new runs when enforcement is enabled
+from decimal import Decimal
+
+MINIMUM_WALLET_BALANCE_USD = Decimal(
+    os.getenv("MINIMUM_WALLET_BALANCE_USD", "0.00")
+)

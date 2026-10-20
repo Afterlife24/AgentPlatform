@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Table,
     Text,
@@ -27,6 +28,7 @@ from api.constants import DEFAULT_CAMPAIGN_RETRY_CONFIG
 
 from ..enums import (
     CallType,
+    CreditLedgerEntryType,
     IntegrationAction,
     ToolCategory,
     ToolStatus,
@@ -71,6 +73,10 @@ class UserModel(Base):
     is_superuser = Column(Boolean, default=False)
     email = Column(String, nullable=True)
     password_hash = Column(String, nullable=True)
+    # OTP fields for email verification (signup) and password reset
+    otp_code = Column(String(6), nullable=True)
+    otp_expires_at = Column(DateTime(timezone=True), nullable=True)
+    otp_purpose = Column(String(16), nullable=True)  # "signup" | "reset"
 
     __table_args__ = (
         Index(
@@ -1621,3 +1627,218 @@ from api.db.models_relational_dataset import (
     DbTableComputedColumnModel,
     DbTableViewModel,
 )
+
+# ---------------------------------------------------------------------------
+# Credit Wallet models (prepaid billing system)
+# ---------------------------------------------------------------------------
+
+
+class OrganizationCreditAccountModel(Base):
+    """Per-organization prepaid credit wallet.
+    
+    One account per organization. All balances stored in USD. Display conversion
+    happens at API edges only. Uses Decimal (never float) for money precision.
+    """
+
+    __tablename__ = "organization_credit_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(
+        Integer,
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    # Balance tracking (always in USD, signed decimal for precision)
+    balance_usd = Column(
+        Numeric(18, 6),
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+        comment="Current balance in USD. Precision: 6 decimals ($0.000001)",
+    )
+
+    # Display currency configuration
+    display_currency = Column(
+        String(3),
+        nullable=False,
+        default="USD",
+        server_default=text("'USD'"),
+        comment="ISO 4217 currency code for UI display",
+    )
+    display_fx_rate_to_usd = Column(
+        Numeric(18, 6),
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+        comment="Exchange rate: 1 display_currency = X USD",
+    )
+
+    # Threshold and blocking
+    low_balance_threshold_usd = Column(
+        Numeric(18, 6),
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+        comment="Alert threshold in USD. Zero = no alerts",
+    )
+    is_blocked = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+        comment="If true, prevent new workflow runs",
+    )
+
+    # Audit timestamps
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    # Relationships
+    organization = relationship("OrganizationModel")
+    ledger_entries = relationship(
+        "CreditLedgerEntryModel",
+        back_populates="account",
+        order_by="CreditLedgerEntryModel.created_at.desc()",
+        cascade="all, delete-orphan",
+    )
+
+    # Indexes and constraints
+    __table_args__ = (
+        Index("ix_credit_accounts_organization_id", "organization_id", unique=True),
+        Index("ix_credit_accounts_balance", "balance_usd"),
+        Index("ix_credit_accounts_blocked", "is_blocked"),
+    )
+
+
+class CreditLedgerEntryModel(Base):
+    """Immutable append-only ledger for all credit account mutations.
+    
+    Every balance change writes one entry with: amount (signed), new balance after,
+    idempotency key, and full provenance (workflow_run_id, tokens, payment details).
+    """
+
+    __tablename__ = "credit_ledger_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    organization_id = Column(
+        Integer,
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    account_id = Column(
+        Integer,
+        ForeignKey("organization_credit_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Entry classification
+    entry_type = Column(
+        Enum(
+            *[t.value for t in CreditLedgerEntryType],
+            name="credit_ledger_entry_type",
+        ),
+        nullable=False,
+        index=True,
+    )
+
+    # Amount and balance (always USD, signed Numeric)
+    amount_usd = Column(
+        Numeric(18, 6),
+        nullable=False,
+        comment="Signed amount: positive for credits (topup), negative for debits (call)",
+    )
+    balance_after_usd = Column(
+        Numeric(18, 6),
+        nullable=False,
+        comment="Snapshot of balance_usd after applying this entry",
+    )
+
+    # Idempotency — unique key prevents duplicate charges/topups
+    idempotency_key = Column(
+        String(255),
+        nullable=False,
+        unique=True,
+        index=True,
+        comment="Client-provided or server-generated unique key (workflow_run_id for debits)",
+    )
+
+    # Provenance fields for call debits
+    workflow_run_id = Column(
+        Integer,
+        ForeignKey("workflow_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+        comment="Workflow run that triggered this debit (null for topups/adjustments)",
+    )
+    tokens_charged = Column(
+        Integer,
+        nullable=True,
+        comment="Dograh tokens consumed (call debits only)",
+    )
+
+    # Provenance fields for topups (payment receipts)
+    paid_amount_minor = Column(
+        Integer,
+        nullable=True,
+        comment="Payment amount in minor units (cents/paise) — topups only",
+    )
+    paid_currency = Column(
+        String(3),
+        nullable=True,
+        comment="ISO 4217 currency code of payment — topups only",
+    )
+    fx_rate_to_usd = Column(
+        Numeric(18, 6),
+        nullable=True,
+        comment="Exchange rate used for this topup: 1 paid_currency = X USD",
+    )
+    payment_provider_reference = Column(
+        String(255),
+        nullable=True,
+        comment="Payment gateway transaction ID (Stripe charge_id, etc.)",
+    )
+
+    # Optional memo for adjustments/refunds
+    memo = Column(
+        Text,
+        nullable=True,
+        comment="Human-readable note for manual adjustments, refunds",
+    )
+
+    # Timestamps (immutable — no updated_at)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+
+    # Relationships
+    organization = relationship("OrganizationModel")
+    account = relationship("OrganizationCreditAccountModel", back_populates="ledger_entries")
+    workflow_run = relationship("WorkflowRunModel")
+
+    # Indexes and constraints
+    __table_args__ = (
+        Index("ix_ledger_entries_account_id", "account_id"),
+        Index("ix_ledger_entries_organization_id", "organization_id"),
+        Index("ix_ledger_entries_idempotency_key", "idempotency_key", unique=True),
+        Index("ix_ledger_entries_workflow_run_id", "workflow_run_id"),
+        Index(
+            "ix_ledger_entries_org_created",
+            "organization_id",
+            "created_at",
+            postgresql_using="btree",
+        ),
+        Index("ix_ledger_entries_entry_type", "entry_type"),
+    )
+>>>>>>> origin/main

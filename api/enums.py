@@ -183,6 +183,16 @@ class ToolStatus(Enum):
     DRAFT = "draft"  # Tool is being configured (not ready for use)
 
 
+class CreditLedgerEntryType(Enum):
+    """Credit ledger entry types for prepaid wallet"""
+
+    INITIAL_BALANCE = "initial_balance"  # Org creation seed
+    TOPUP = "topup"  # Customer payment
+    DEBIT_CALL = "debit_call"  # Workflow run charge
+    REFUND = "refund"  # Credit reversal
+    ADJUSTMENT = "adjustment"  # Manual correction
+
+
 class PostHogEvent(str, Enum):
     """PostHog event names — backend events only."""
 
@@ -194,6 +204,8 @@ class PostHogEvent(str, Enum):
     CALL_FAILED = "call_failed"
     TELEPHONY_CONFIGURED = "telephony_configured"
     KNOWLEDGE_BASE_CREATED = "knowledge_base_created"
+    KNOWLEDGE_BASE_CHUNKED = "knowledge_base_chunked"
+    CALL_COMPLETED_BILLING = "call_completed_billing"
     TOOL_CREATED = "tool_created"
     AGENT_EMBEDDED = "agent_embedded"
     SIGNED_UP = "signed_up"

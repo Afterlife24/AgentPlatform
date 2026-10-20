@@ -229,11 +229,12 @@ services:
       FORCE_TURN_RELAY: "${FORCE_TURN_RELAY:-false}"
 
       OSS_JWT_SECRET: "${OSS_JWT_SECRET:?OSS_JWT_SECRET must be set to a strong secret}"
+      DOGRAH_INTERNAL_SECRET: "${DOGRAH_INTERNAL_SECRET:-}"
 
       # Telemetry
       ENABLE_TELEMETRY: "${ENABLE_TELEMETRY:-true}"
-      POSTHOG_API_KEY: "phc_ItizB1dP6yv7ZYobbcqrpxTdbomDA8hJFSEmAMdYvIr"
-      POSTHOG_HOST: "https://us.i.posthog.com"
+      POSTHOG_API_KEY: "${POSTHOG_API_KEY}"
+      POSTHOG_HOST: "${POSTHOG_HOST}"
 
     ports:
       - "8000:8000"
@@ -284,9 +285,10 @@ services:
       PUBLIC_HOST: "${PUBLIC_HOST:-}"
       BACKEND_API_ENDPOINT: "${BACKEND_API_ENDPOINT:-}"
       OSS_JWT_SECRET: "${OSS_JWT_SECRET:?OSS_JWT_SECRET must be set to a strong secret}"
+      DOGRAH_INTERNAL_SECRET: "${DOGRAH_INTERNAL_SECRET:-}"
       ENABLE_TELEMETRY: "${ENABLE_TELEMETRY:-true}"
-      POSTHOG_API_KEY: "phc_ItizB1dP6yv7ZYobbcqrpxTdbomDA8hJFSEmAMdYvIr"
-      POSTHOG_HOST: "https://us.i.posthog.com"
+      POSTHOG_API_KEY: "${POSTHOG_API_KEY}"
+      POSTHOG_HOST: "${POSTHOG_HOST}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -311,7 +313,7 @@ services:
       ENABLE_TELEMETRY: "${ENABLE_TELEMETRY:-true}"
 
       # Posthog
-      POSTHOG_KEY: "phc_ItizB1dP6yv7ZYobbcqrpxTdbomDA8hJFSEmAMdYvIr"
+      POSTHOG_KEY: "${POSTHOG_API_KEY}"
       POSTHOG_HOST: "https://us.posthog.com"
     ports:
       - "3010:3010"
