@@ -62,6 +62,39 @@ class EmbedConfigResponse(BaseModel):
     auto_start: bool
 
 
+class EmbedChatMessageRequest(BaseModel):
+    """Request model for sending a chat message from an embedded widget"""
+
+    token: str
+    session_key: str
+    text: str
+    initial_context: Optional[dict] = None
+
+
+class EmbedChatMessageResponse(BaseModel):
+    """Response model for embedded chat message"""
+
+    session_key: str
+    assistant_text: Optional[str] = None
+    is_completed: bool = False
+    workflow_run_id: int
+
+
+class EmbedChatTeardownRequest(BaseModel):
+    """Request model for tearing down an embedded chat session"""
+
+    token: str
+    session_key: str
+
+
+class EmbedChatTeardownResponse(BaseModel):
+    """Response model for chat session teardown"""
+
+    status: str
+    session_key: str
+    message: str
+
+
 def validate_origin(origin: str, allowed_domains: list) -> bool:
     """Validate if the origin is in the allowed domains list.
 
@@ -229,6 +262,12 @@ async def build_public_embed_preflight_response(
             return Response(status_code=405)
         session_token = path[len(turn_credentials_prefix) :].split("/", 1)[0]
         return await _turn_credentials_preflight_response(session_token, origin)
+
+    chat_prefix = f"{public_embed_prefix}/chat/"
+    if path.startswith(chat_prefix):
+        if requested_method.upper() not in ("POST", "OPTIONS"):
+            return Response(status_code=405)
+        return _cors_response(origin, "POST, OPTIONS")
 
     return None
 
@@ -482,4 +521,117 @@ async def options_turn_credentials(request: Request, session_token: str):
     # Browser preflights are handled by PublicEmbedCORSMiddleware before global CORS.
     return await _turn_credentials_preflight_response(
         session_token, request.headers.get("origin", "")
+    )
+
+
+@router.options("/chat/message")
+async def options_chat_message(request: Request):
+    origin = request.headers.get("origin", "*")
+    return _cors_response(origin, "POST, OPTIONS")
+
+
+@router.post("/chat/message", response_model=EmbedChatMessageResponse)
+async def send_embed_chat_message(
+    request: Request, chat_request: EmbedChatMessageRequest, response: Response
+):
+    """Send a text chat message from an embedded web widget.
+
+    Validates the embed token and domain whitelist, resolves the workflow,
+    executes the assistant turn in the text session, and returns the response.
+    """
+    origin = get_request_origin(request)
+
+    embed_token = await db_client.get_embed_token_by_token(chat_request.token)
+    if not embed_token:
+        raise HTTPException(status_code=404, detail="Invalid embed token")
+    if not embed_token.is_active:
+        raise HTTPException(status_code=403, detail="Embed token is inactive")
+    if embed_token.expires_at and embed_token.expires_at < datetime.now(UTC):
+        raise HTTPException(status_code=403, detail="Embed token has expired")
+
+    if not validate_origin(origin, embed_token.allowed_domains or []):
+        raise HTTPException(status_code=403, detail=f"Domain not allowed: {origin}")
+
+    if origin:
+        _allow_embed_origin(response, origin)
+
+    workflow = await db_client.get_workflow(
+        embed_token.workflow_id, organization_id=embed_token.organization_id
+    )
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    from api.routes.public_text_chat import (
+        PublicTextChatMessageRequest,
+        _handle_message,
+    )
+
+    res = await _handle_message(
+        workflow=workflow,
+        organization_id=embed_token.organization_id,
+        request=PublicTextChatMessageRequest(
+            session_key=chat_request.session_key,
+            text=chat_request.text,
+            initial_context=chat_request.initial_context,
+        ),
+        use_draft=False,
+        api_key_id=None,
+    )
+
+    await db_client.increment_embed_token_usage(embed_token.id)
+
+    return EmbedChatMessageResponse(
+        session_key=res.session_key,
+        assistant_text=res.assistant_text,
+        is_completed=res.is_completed,
+        workflow_run_id=res.workflow_run_id,
+    )
+
+
+@router.options("/chat/teardown")
+async def options_chat_teardown(request: Request):
+    origin = request.headers.get("origin", "*")
+    return _cors_response(origin, "POST, OPTIONS")
+
+
+@router.post("/chat/teardown", response_model=EmbedChatTeardownResponse)
+async def teardown_embed_chat_session(
+    request: Request, teardown_request: EmbedChatTeardownRequest, response: Response
+):
+    """Teardown an embedded chat session on widget close.
+
+    Marks the active workflow run as completed, terminating server-side session context
+    and ensuring zero token/context bleed for future sessions.
+    """
+    origin = get_request_origin(request)
+
+    embed_token = await db_client.get_embed_token_by_token(teardown_request.token)
+    if not embed_token or not embed_token.is_active:
+        raise HTTPException(status_code=403, detail="Invalid or inactive embed token")
+
+    if not validate_origin(origin, embed_token.allowed_domains or []):
+        raise HTTPException(status_code=403, detail=f"Domain not allowed: {origin}")
+
+    if origin:
+        _allow_embed_origin(response, origin)
+
+    existing_run = await db_client.get_workflow_run_by_annotation(
+        workflow_id=embed_token.workflow_id,
+        organization_id=embed_token.organization_id,
+        annotation_key="public_text_chat",
+        annotation_value={"session_key": teardown_request.session_key},
+        mode=WorkflowRunMode.TEXTCHAT.value,
+        completed=False,
+    )
+
+    if existing_run:
+        await db_client.update_workflow_run(existing_run.id, is_completed=True)
+        logger.info(
+            f"Successfully tore down server-side text chat session for {teardown_request.session_key} (run_id={existing_run.id})"
+        )
+
+    return EmbedChatTeardownResponse(
+        status="teardown_complete",
+        session_key=teardown_request.session_key,
+        message="Session successfully terminated and server-side context cleared.",
     )

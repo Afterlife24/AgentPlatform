@@ -17,7 +17,7 @@ if [[ -f "$ENV_FILE" ]]; then
   set -a && . "$ENV_FILE" && set +a
 fi
 
-alembic -c "$BASE_DIR/api/alembic.ini" upgrade head
+alembic -c "$BASE_DIR/api/alembic.ini" upgrade heads
 
 pids=()
 
