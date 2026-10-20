@@ -1841,4 +1841,3 @@ class CreditLedgerEntryModel(Base):
         ),
         Index("ix_ledger_entries_entry_type", "entry_type"),
     )
->>>>>>> origin/main
