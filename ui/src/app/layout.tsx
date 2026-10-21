@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Suspense } from "react";
 
+import AgentXChatWidget from "@/components/AgentXChatWidget";
 import ChatwootWidget from "@/components/ChatwootWidget";
 import AppLayout from "@/components/layout/AppLayout";
 import PostHogIdentify from "@/components/PostHogIdentify";
@@ -79,6 +80,7 @@ export default function RootLayout({
                         </AppLayout>
                         <Toaster />
                         <ChatwootWidget />
+                        <AgentXChatWidget />
                       </OnboardingProvider>
                     </TelephonyConfigWarningsProvider>
                   </OrgConfigProvider>

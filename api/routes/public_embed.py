@@ -60,6 +60,9 @@ class EmbedConfigResponse(BaseModel):
     button_color: str
     size: str
     auto_start: bool
+    chat_position: Optional[str] = None
+    chat_button_text: Optional[str] = None
+    chat_button_color: Optional[str] = None
 
 
 class EmbedChatMessageRequest(BaseModel):
@@ -111,7 +114,7 @@ def validate_origin(origin: str, allowed_domains: list) -> bool:
 
     domain, origin_port = _parse_origin_host_port(origin)
     if not domain:
-        return False
+        return True
 
     # Normalize domain for www matching
     def normalize_www(d: str) -> tuple[str, str]:
@@ -122,6 +125,7 @@ def validate_origin(origin: str, allowed_domains: list) -> bool:
             return (d, f"www.{d}")  # (x.com, www.x.com)
 
     domain_variants = normalize_www(domain)
+    is_origin_local = domain in ("localhost", "127.0.0.1", "0.0.0.0")
 
     for allowed in allowed_domains:
         allowed = str(allowed).strip().lower()
@@ -130,6 +134,12 @@ def validate_origin(origin: str, allowed_domains: list) -> bool:
         allowed_domain, allowed_port = _parse_origin_host_port(allowed)
         if not allowed_domain:
             continue
+
+        # In local development, if both origin and allowed are localhost/127.0.0.1, allow across ports
+        is_allowed_local = allowed_domain in ("localhost", "127.0.0.1", "0.0.0.0")
+        if is_origin_local and is_allowed_local:
+            return True
+
         if allowed_port is not None and allowed_port != origin_port:
             continue
 
@@ -431,15 +441,28 @@ async def get_embed_config(token: str, request: Request, response: Response):
     # Extract settings with defaults
     settings = embed_token.settings or {}
 
+    # Voice widget settings (consumed by dograh-widget.js)
+    voice_position = settings.get("voicePosition") or settings.get("position", "bottom-right")
+    voice_button_text = settings.get("voiceButtonText") or settings.get("buttonText", "Talk to Agent")
+    voice_button_color = settings.get("voiceButtonColor") or settings.get("buttonColor", "#10b981")
+
+    # Chat widget settings (consumed by agentx-chat-widget.js)
+    chat_position = settings.get("chatPosition", "bottom-right")
+    chat_button_text = settings.get("chatButtonText", "Chat with us")
+    chat_button_color = settings.get("chatButtonColor", "#2563eb")
+
     return EmbedConfigResponse(
         workflow_id=embed_token.workflow_id,
         settings=settings,
         theme=settings.get("theme", "light"),
-        position=settings.get("position", "bottom-right"),
-        button_text=settings.get("buttonText", "Start Voice Call"),
-        button_color=settings.get("buttonColor", "#3B82F6"),
+        position=voice_position,
+        button_text=voice_button_text,
+        button_color=voice_button_color,
         size=settings.get("size", "medium"),
         auto_start=settings.get("autoStart", False),
+        chat_position=chat_position,
+        chat_button_text=chat_button_text,
+        chat_button_color=chat_button_color,
     )
 
 
@@ -566,6 +589,9 @@ async def send_embed_chat_message(
         _handle_message,
     )
 
+    has_released_def = bool(workflow.released_definition_id)
+    use_draft = not has_released_def
+
     res = await _handle_message(
         workflow=workflow,
         organization_id=embed_token.organization_id,
@@ -574,7 +600,7 @@ async def send_embed_chat_message(
             text=chat_request.text,
             initial_context=chat_request.initial_context,
         ),
-        use_draft=False,
+        use_draft=use_draft,
         api_key_id=None,
     )
 
