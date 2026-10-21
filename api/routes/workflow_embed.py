@@ -17,7 +17,7 @@ router = APIRouter(prefix="/workflow")
 
 
 def generate_embed_script(token: EmbedTokenModel) -> str:
-    """Generate the embed script for a given token."""
+    """Generate the voice embed script for a given token."""
     base_url = str(UI_APP_URL).rstrip("/")
 
     return f"""<!-- Dograh Voice Widget -->
@@ -30,6 +30,23 @@ def generate_embed_script(token: EmbedTokenModel) -> str:
     js.async = true;
     fjs.parentNode.insertBefore(js, fjs);
   }}(document, 'script', 'dograh-widget'));
+</script>"""
+
+
+def generate_chat_embed_script(token: EmbedTokenModel) -> str:
+    """Generate the chat embed script for a given token."""
+    base_url = str(UI_APP_URL).rstrip("/")
+
+    return f"""<!-- AgentX Chat Widget -->
+<script>
+  (function(d, s, id) {{
+    var js, fjs = d.getElementsByTagName(s)[0];
+    if (d.getElementById(id)) return;
+    js = d.createElement(s); js.id = id;
+    js.src = '{base_url}/embed/agentx-chat-widget.js?token={token.token}&environment={ENVIRONMENT}&apiEndpoint={BACKEND_API_ENDPOINT}';
+    js.async = true;
+    fjs.parentNode.insertBefore(js, fjs);
+  }}(document, 'script', 'agentx-chat-widget'));
 </script>"""
 
 
@@ -51,6 +68,7 @@ class EmbedTokenResponse(BaseModel):
     expires_at: Optional[datetime]
     created_at: datetime
     embed_script: str
+    chat_embed_script: Optional[str] = None
 
 
 @router.post("/{workflow_id}/embed-token")
@@ -116,8 +134,9 @@ async def create_or_update_embed_token(
         },
     )
 
-    # Generate embed script
+    # Generate embed scripts
     embed_script = generate_embed_script(token)
+    chat_embed_script = generate_chat_embed_script(token)
 
     return EmbedTokenResponse(
         id=token.id,
@@ -130,6 +149,7 @@ async def create_or_update_embed_token(
         expires_at=token.expires_at,
         created_at=token.created_at,
         embed_script=embed_script,
+        chat_embed_script=chat_embed_script,
     )
 
 
@@ -161,8 +181,9 @@ async def get_embed_token(
 
     token = tokens[0]  # There should be only one active token per workflow
 
-    # Generate embed script
+    # Generate embed scripts
     embed_script = generate_embed_script(token)
+    chat_embed_script = generate_chat_embed_script(token)
 
     return EmbedTokenResponse(
         id=token.id,
@@ -175,6 +196,7 @@ async def get_embed_token(
         expires_at=token.expires_at,
         created_at=token.created_at,
         embed_script=embed_script,
+        chat_embed_script=chat_embed_script,
     )
 
 

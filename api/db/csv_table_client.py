@@ -22,7 +22,11 @@ from loguru import logger
 from sqlalchemy import delete, select, text, update
 
 from api.db.base_client import BaseDBClient
-from api.db.models import CsvTableModel, CsvTableRowModel
+from api.db.models import (
+    CsvTableModel,
+    CsvTableRowModel,
+    KnowledgeBaseDocumentModel,
+)
 
 
 class CsvTableClient(BaseDBClient):
@@ -118,7 +122,30 @@ class CsvTableClient(BaseDBClient):
                     CsvTableModel.is_active.is_(True),
                 )
             )
-            return result.scalars().first()
+            table = result.scalars().first()
+            if table:
+                return table
+
+            # Fallback: check if table_uuid is a knowledge_base_documents document_uuid
+            doc_result = await session.execute(
+                select(KnowledgeBaseDocumentModel).where(
+                    KnowledgeBaseDocumentModel.document_uuid == table_uuid,
+                    KnowledgeBaseDocumentModel.organization_id == organization_id,
+                )
+            )
+            doc = doc_result.scalars().first()
+            if doc and doc.docling_metadata and isinstance(doc.docling_metadata, dict):
+                real_table_uuid = doc.docling_metadata.get("table_uuid")
+                if real_table_uuid:
+                    res2 = await session.execute(
+                        select(CsvTableModel).where(
+                            CsvTableModel.table_uuid == real_table_uuid,
+                            CsvTableModel.organization_id == organization_id,
+                            CsvTableModel.is_active.is_(True),
+                        )
+                    )
+                    return res2.scalars().first()
+            return None
 
     async def get_csv_table_by_id(self, table_id: int) -> Optional[CsvTableModel]:
         async with self.async_session() as session:
@@ -482,7 +509,7 @@ class CsvTableClient(BaseDBClient):
     async def _resolve_table_uuids(
         self, organization_id: int, table_uuids: List[str]
     ) -> List[int]:
-        """Resolve public table UUIDs → internal integer IDs."""
+        """Resolve public table UUIDs or document UUIDs → internal integer IDs."""
         if not table_uuids:
             return []
         placeholders = ", ".join(f":uuid_{i}" for i in range(len(table_uuids)))
@@ -496,4 +523,38 @@ class CsvTableClient(BaseDBClient):
               AND is_active = true
         """
         rows = await self.execute_raw_query(sql, params)
-        return [r["id"] for r in rows]
+        found_ids = [r["id"] for r in rows]
+        if len(found_ids) == len(table_uuids):
+            return found_ids
+
+        # If some table_uuids are document_uuids, resolve them via knowledge_base_documents
+        doc_sql = f"""
+            SELECT docling_metadata->>'table_uuid' as real_table_uuid
+            FROM knowledge_base_documents
+            WHERE document_uuid IN ({placeholders})
+              AND organization_id = :org_id
+              AND retrieval_mode = 'table'
+        """
+        doc_rows = await self.execute_raw_query(doc_sql, params)
+        extra_table_uuids = [
+            r["real_table_uuid"] for r in doc_rows if r.get("real_table_uuid")
+        ]
+        if extra_table_uuids:
+            extra_placeholders = ", ".join(
+                f":e_uuid_{i}" for i in range(len(extra_table_uuids))
+            )
+            extra_params = {"org_id": organization_id}
+            for i, uid in enumerate(extra_table_uuids):
+                extra_params[f"e_uuid_{i}"] = uid
+            extra_sql = f"""
+                SELECT id FROM csv_tables
+                WHERE table_uuid IN ({extra_placeholders})
+                  AND organization_id = :org_id
+                  AND is_active = true
+            """
+            extra_rows = await self.execute_raw_query(extra_sql, extra_params)
+            for r in extra_rows:
+                if r["id"] not in found_ids:
+                    found_ids.append(r["id"])
+
+        return found_ids

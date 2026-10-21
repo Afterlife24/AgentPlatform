@@ -1,4 +1,21 @@
-import { Check, Copy, ExternalLink, Loader2, Mic, Plus, Rocket, Trash2 } from "lucide-react";
+import {
+    Check,
+    Copy,
+    ExternalLink,
+    Globe,
+    Layers,
+    Loader2,
+    Lock,
+    MessageSquare,
+    Mic,
+    Plus,
+    RefreshCw,
+    Rocket,
+    Send,
+    ShieldCheck,
+    Trash2,
+    X,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import {
@@ -6,6 +23,7 @@ import {
     deactivateEmbedTokenApiV1WorkflowWorkflowIdEmbedTokenDelete,
     getEmbedTokenApiV1WorkflowWorkflowIdEmbedTokenGet,
 } from "@/client/sdk.gen";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
     Dialog,
@@ -45,6 +63,7 @@ interface EmbedToken {
     expires_at: string | null;
     created_at: string;
     embed_script: string;
+    chat_embed_script?: string;
 }
 
 export function EmbedDialog({
@@ -58,7 +77,10 @@ export function EmbedDialog({
     const [embedToken, setEmbedToken] = useState<EmbedToken | null>(null);
     const [copied, setCopied] = useState(false);
 
-    // Form state
+    // Widget Category: "chat" (Priority 3 & 4) vs "voice" (Dograh Voice)
+    const [widgetType, setWidgetType] = useState<"chat" | "voice">("chat");
+
+    // Form state (Shared & Voice)
     const [isEnabled, setIsEnabled] = useState(false);
     const [domains, setDomains] = useState<string[]>([]);
     const [newDomain, setNewDomain] = useState("");
@@ -68,6 +90,13 @@ export function EmbedDialog({
     const [buttonColor, setButtonColor] = useState("#10b981");
     const [callToActionText, setCallToActionText] = useState("Click to start voice conversation");
 
+    // Form state (Chat Widget - Priority 3 & 4)
+    const [chatTitle, setChatTitle] = useState(workflowName || "AI Assistant");
+    const [chatSubtitle, setChatSubtitle] = useState("Online • Ready to assist");
+    const [chatButtonColor, setChatButtonColor] = useState("#2563eb");
+    const [chatPosition, setChatPosition] = useState("bottom-right");
+    const [chatButtonText, setChatButtonText] = useState("Chat with us");
+
     const loadEmbedToken = useCallback(async () => {
         setLoading(true);
         try {
@@ -76,22 +105,33 @@ export function EmbedDialog({
             });
 
             if (response.data) {
-                setEmbedToken(response.data as EmbedToken);
-                setIsEnabled(response.data.is_active);
+                const data = response.data as EmbedToken;
+                setEmbedToken(data);
+                setIsEnabled(data.is_active);
 
                 // Load settings
-                if (response.data.settings) {
-                    const settings = response.data.settings as Record<string, string>;
+                if (data.settings) {
+                    const settings = data.settings as Record<string, string>;
+                    if (settings.widgetType === "voice" || settings.widgetType === "chat") {
+                        setWidgetType(settings.widgetType);
+                    }
                     setEmbedMode((settings.embedMode as "floating" | "inline" | "headless") || "floating");
                     setPosition(settings.position || "bottom-right");
                     setButtonText(settings.buttonText || "Talk to Agent");
                     setButtonColor(settings.buttonColor || "#10b981");
                     setCallToActionText(settings.callToActionText || "Click to start voice conversation");
+
+                    // Chat settings
+                    if (settings.chatTitle) setChatTitle(settings.chatTitle);
+                    if (settings.chatSubtitle) setChatSubtitle(settings.chatSubtitle);
+                    if (settings.chatButtonColor) setChatButtonColor(settings.chatButtonColor);
+                    if (settings.chatPosition) setChatPosition(settings.chatPosition);
+                    if (settings.chatButtonText) setChatButtonText(settings.chatButtonText);
                 }
 
                 // Load domains
-                if (response.data.allowed_domains) {
-                    setDomains(response.data.allowed_domains);
+                if (data.allowed_domains) {
+                    setDomains(data.allowed_domains);
                 }
             }
         } catch (error) {
@@ -123,6 +163,7 @@ export function EmbedDialog({
                     body: {
                         allowed_domains: domains.length > 0 ? domains : null,
                         settings: {
+                            widgetType,
                             embedMode,
                             position,
                             buttonText,
@@ -131,6 +172,11 @@ export function EmbedDialog({
                             size: "medium",
                             autoStart: false,
                             containerId: embedMode === "inline" ? "dograh-inline-container" : undefined,
+                            chatTitle,
+                            chatSubtitle,
+                            chatButtonColor,
+                            chatPosition,
+                            chatButtonText,
                         },
                         usage_limit: null,
                         expires_in_days: null,
@@ -141,8 +187,6 @@ export function EmbedDialog({
                     setEmbedToken(response.data as EmbedToken);
                 }
             }
-
-            // Don't close modal after saving - let user copy the embed code
         } catch (error) {
             console.error("Failed to save embed token:", error);
         } finally {
@@ -164,15 +208,39 @@ export function EmbedDialog({
     };
 
     const removeDomain = (domain: string) => {
-        setDomains(domains.filter(d => d !== domain));
+        setDomains(domains.filter((d) => d !== domain));
     };
 
     const handleKeyPress = (e: React.KeyboardEvent) => {
-        if (e.key === 'Enter') {
+        if (e.key === "Enter") {
             e.preventDefault();
             addDomain();
         }
     };
+
+    // Construct live chat embed script
+    const currentOrigin =
+        typeof window !== "undefined" && window.location.origin
+            ? window.location.origin
+            : "http://localhost:3000";
+
+    const liveToken = embedToken?.token || "YOUR_TOKEN";
+    const liveChatScript = `<!-- AgentX Chat Widget -->
+<script>
+  (function(d, s, id) {
+    var js, fjs = d.getElementsByTagName(s)[0];
+    if (d.getElementById(id)) return;
+    js = d.createElement(s); js.id = id;
+    js.src = '${currentOrigin}/embed/agentx-chat-widget.js?token=${liveToken}&environment=local&apiEndpoint=${currentOrigin}';
+    js.async = true;
+    fjs.parentNode.insertBefore(js, fjs);
+  }(document, 'script', 'agentx-chat-widget'));
+</script>`;
+
+    const activeEmbedScript =
+        widgetType === "chat"
+            ? embedToken?.chat_embed_script || liveChatScript
+            : embedToken?.embed_script || "";
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -180,21 +248,23 @@ export function EmbedDialog({
                 <DialogHeader>
                     <div className="flex items-center justify-between">
                         <DialogTitle className="flex items-center gap-2">
-                            <Rocket className="h-5 w-5" />
-                            Configure Widget
+                            <Rocket className="h-5 w-5 text-primary" />
+                            Configure Embed Widget
                         </DialogTitle>
-                        <a
-                            href={WIDGET_MODE_DOCUMENTATION_URLS[embedMode]}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors pr-6"
-                        >
-                            Docs
-                            <ExternalLink className="h-3.5 w-3.5" />
-                        </a>
+                        {widgetType === "voice" && (
+                            <a
+                                href={WIDGET_MODE_DOCUMENTATION_URLS[embedMode]}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors pr-6"
+                            >
+                                Docs
+                                <ExternalLink className="h-3.5 w-3.5" />
+                            </a>
+                        )}
                     </div>
                     <DialogDescription>
-                        Add &quot;{workflowName}&quot; to any website with a simple script tag.
+                        Generate an embeddable script snippet to deploy &quot;{workflowName}&quot; as an interactive Chat Widget or Voice Agent on any web page.
                     </DialogDescription>
                 </DialogHeader>
 
@@ -205,11 +275,11 @@ export function EmbedDialog({
                 ) : (
                     <div className="space-y-6">
                         {/* Enable/Disable Toggle */}
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between p-4 rounded-lg bg-muted/40 border">
                             <div className="space-y-0.5">
-                                <Label htmlFor="embed-enabled">Enable Embedding</Label>
+                                <Label htmlFor="embed-enabled" className="text-base font-semibold">Enable Embedding</Label>
                                 <p className="text-sm text-muted-foreground">
-                                    Allow this workflow to be embedded on external websites
+                                    Allow this workflow to be embedded across web applications via script tag
                                 </p>
                             </div>
                             <Switch
@@ -221,322 +291,404 @@ export function EmbedDialog({
 
                         {isEnabled && (
                             <>
+                                {/* Widget Category Selector (Priority 3) */}
+                                <div className="space-y-2">
+                                    <Label className="text-sm font-semibold">Select Widget Type</Label>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <button
+                                            type="button"
+                                            onClick={() => setWidgetType("chat")}
+                                            className={`p-4 rounded-xl border-2 text-left transition-all ${
+                                                widgetType === "chat"
+                                                    ? "border-blue-600 bg-blue-50/50 dark:bg-blue-950/20 shadow-sm"
+                                                    : "border-muted hover:border-muted-foreground/30 bg-card"
+                                            }`}
+                                        >
+                                            <div className="flex items-center gap-2 mb-1.5">
+                                                <div className="p-1.5 rounded-md bg-blue-500/10 text-blue-600">
+                                                    <MessageSquare className="h-5 w-5" />
+                                                </div>
+                                                <span className="font-semibold text-foreground">Chat Widget</span>
+                                                <Badge variant="secondary" className="text-[10px] ml-auto bg-blue-100 text-blue-700 dark:bg-blue-900/60 dark:text-blue-300">
+                                                    Priority 3 & 4
+                                                </Badge>
+                                            </div>
+                                            <p className="text-xs text-muted-foreground leading-relaxed">
+                                                Embeddable text conversational assistant with sessionStorage navigation persistence, state hygiene, and backend teardown.
+                                            </p>
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            onClick={() => setWidgetType("voice")}
+                                            className={`p-4 rounded-xl border-2 text-left transition-all ${
+                                                widgetType === "voice"
+                                                    ? "border-emerald-600 bg-emerald-50/50 dark:bg-emerald-950/20 shadow-sm"
+                                                    : "border-muted hover:border-muted-foreground/30 bg-card"
+                                            }`}
+                                        >
+                                            <div className="flex items-center gap-2 mb-1.5">
+                                                <div className="p-1.5 rounded-md bg-emerald-500/10 text-emerald-600">
+                                                    <Mic className="h-5 w-5" />
+                                                </div>
+                                                <span className="font-semibold text-foreground">Voice Agent</span>
+                                                <Badge variant="outline" className="text-[10px] ml-auto">
+                                                    WebRTC
+                                                </Badge>
+                                            </div>
+                                            <p className="text-xs text-muted-foreground leading-relaxed">
+                                                Ultra-low latency two-way audio voice agent supporting floating, inline, and headless trigger modes.
+                                            </p>
+                                        </button>
+                                    </div>
+                                </div>
+
                                 <Separator />
 
                                 {/* Allowed Domains */}
                                 <div className="space-y-3">
-                                    <Label>
-                                        Allowed Domains
-                                        <span className="text-xs text-muted-foreground ml-2">
-                                            (leave empty to allow all domains)
-                                        </span>
-                                    </Label>
+                                    <div className="flex items-center justify-between">
+                                        <Label className="text-sm font-semibold">
+                                            Allowed Domains
+                                            <span className="text-xs font-normal text-muted-foreground ml-2">
+                                                (leave empty to permit all host origins)
+                                            </span>
+                                        </Label>
+                                        {domains.length === 0 && (
+                                            <Badge variant="outline" className="text-[11px] text-muted-foreground">
+                                                Universal Access (All Domains)
+                                            </Badge>
+                                        )}
+                                    </div>
 
                                     {/* Domain Input */}
                                     <div className="flex gap-2">
                                         <Input
-                                            placeholder="example.com or *.example.com"
+                                            placeholder="example.com or localhost:3000"
                                             value={newDomain}
                                             onChange={(e) => setNewDomain(e.target.value)}
                                             onKeyPress={handleKeyPress}
                                         />
                                         <Button
                                             type="button"
-                                            size="icon"
-                                            variant="outline"
+                                            size="sm"
+                                            variant="secondary"
                                             onClick={addDomain}
                                             disabled={!newDomain.trim()}
                                         >
-                                            <Plus className="h-4 w-4" />
+                                            <Plus className="h-4 w-4 mr-1" />
+                                            Add Domain
                                         </Button>
                                     </div>
 
                                     {/* Domain List */}
                                     {domains.length > 0 && (
-                                        <div className="space-y-2">
+                                        <div className="flex flex-wrap gap-2 pt-1">
                                             {domains.map((domain, index) => (
                                                 <div
                                                     key={index}
-                                                    className="flex items-center justify-between bg-muted/50 rounded-lg px-3 py-2"
+                                                    className="inline-flex items-center gap-1.5 bg-muted rounded-md px-2.5 py-1 text-xs font-mono"
                                                 >
-                                                    <span className="text-sm font-mono">{domain}</span>
-                                                    <Button
+                                                    <span>{domain}</span>
+                                                    <button
                                                         type="button"
-                                                        size="icon"
-                                                        variant="ghost"
-                                                        className="h-6 w-6"
                                                         onClick={() => removeDomain(domain)}
+                                                        className="text-muted-foreground hover:text-foreground"
                                                     >
-                                                        <Trash2 className="h-3 w-3" />
-                                                    </Button>
+                                                        <X className="h-3 w-3" />
+                                                    </button>
                                                 </div>
                                             ))}
                                         </div>
                                     )}
                                 </div>
 
-                                {/* Embed Mode Selection */}
-                                <div className="space-y-4">
-                                    <Label>Embed Mode</Label>
-                                    <div className="grid grid-cols-3 gap-4">
-                                        <button
-                                            type="button"
-                                            onClick={() => setEmbedMode("floating")}
-                                            className={`p-4 rounded-lg border-2 transition-all ${
-                                                embedMode === "floating"
-                                                    ? "border-primary bg-primary/5"
-                                                    : "border-muted hover:border-muted-foreground/20"
-                                            }`}
-                                        >
-                                            <div className="space-y-2">
-                                                <div className="font-medium">Floating Widget</div>
-                                                <div className="text-xs text-muted-foreground">
-                                                    Shows as a button in corner of the page
+                                <Separator />
+
+                                {/* CHAT WIDGET CONFIGURATION & PREVIEW */}
+                                {widgetType === "chat" && (
+                                    <div className="space-y-6">
+                                        <div className="space-y-4">
+                                            <Label className="text-sm font-semibold">Chat Widget Appearance</Label>
+
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <div className="space-y-2">
+                                                    <Label htmlFor="chat-title" className="text-xs">Chat Header Title</Label>
+                                                    <Input
+                                                        id="chat-title"
+                                                        value={chatTitle}
+                                                        onChange={(e) => setChatTitle(e.target.value)}
+                                                        placeholder="AI Assistant"
+                                                    />
+                                                </div>
+
+                                                <div className="space-y-2">
+                                                    <Label htmlFor="chat-subtitle" className="text-xs">Subtitle Status</Label>
+                                                    <Input
+                                                        id="chat-subtitle"
+                                                        value={chatSubtitle}
+                                                        onChange={(e) => setChatSubtitle(e.target.value)}
+                                                        placeholder="Online • Ready to assist"
+                                                    />
+                                                </div>
+
+                                                <div className="space-y-2">
+                                                    <Label htmlFor="chat-color" className="text-xs">Theme & Button Color</Label>
+                                                    <div className="flex gap-2">
+                                                        <Input
+                                                            type="color"
+                                                            value={chatButtonColor}
+                                                            onChange={(e) => setChatButtonColor(e.target.value)}
+                                                            className="w-12 h-10 p-1 cursor-pointer"
+                                                        />
+                                                        <Input
+                                                            id="chat-color"
+                                                            value={chatButtonColor}
+                                                            onChange={(e) => setChatButtonColor(e.target.value)}
+                                                            className="flex-1 font-mono text-sm"
+                                                        />
+                                                    </div>
+                                                </div>
+
+                                                <div className="space-y-2">
+                                                    <Label htmlFor="chat-pos" className="text-xs">Screen Position</Label>
+                                                    <Select value={chatPosition} onValueChange={setChatPosition}>
+                                                        <SelectTrigger id="chat-pos">
+                                                            <SelectValue />
+                                                        </SelectTrigger>
+                                                        <SelectContent>
+                                                            <SelectItem value="bottom-right">Bottom Right (Standard)</SelectItem>
+                                                            <SelectItem value="bottom-left">Bottom Left</SelectItem>
+                                                        </SelectContent>
+                                                    </Select>
                                                 </div>
                                             </div>
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setEmbedMode("inline")}
-                                            className={`p-4 rounded-lg border-2 transition-all ${
-                                                embedMode === "inline"
-                                                    ? "border-primary bg-primary/5"
-                                                    : "border-muted hover:border-muted-foreground/20"
-                                            }`}
-                                        >
-                                            <div className="space-y-2">
-                                                <div className="font-medium">Inline Component</div>
-                                                <div className="text-xs text-muted-foreground">
-                                                    Embeds directly in your page content
+                                        </div>
+
+                                        {/* Interactive Visual Preview */}
+                                        <div className="space-y-2">
+                                            <Label className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">
+                                                Live Widget Preview
+                                            </Label>
+                                            <div className="rounded-xl border bg-muted/20 p-6 flex items-center justify-center min-h-[320px]">
+                                                {/* Simulated Chat Popup */}
+                                                <div className="w-[320px] rounded-xl border shadow-xl bg-card overflow-hidden text-card-foreground">
+                                                    {/* Header */}
+                                                    <div
+                                                        className="px-4 py-3 flex items-center justify-between text-white"
+                                                        style={{ backgroundColor: chatButtonColor }}
+                                                    >
+                                                        <div className="flex items-center gap-2.5">
+                                                            <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center font-bold text-xs text-white">
+                                                                AI
+                                                            </div>
+                                                            <div>
+                                                                <h4 className="text-sm font-semibold leading-tight">{chatTitle}</h4>
+                                                                <p className="text-[11px] opacity-90 leading-tight">{chatSubtitle}</p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="w-6 h-6 rounded-md hover:bg-black/10 flex items-center justify-center cursor-pointer">
+                                                            <X className="h-3.5 w-3.5 text-white" />
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Messages Area */}
+                                                    <div className="p-3.5 space-y-2.5 bg-background/50 text-xs min-h-[140px] flex flex-col justify-end">
+                                                        <div className="max-w-[85%] rounded-lg px-3 py-2 bg-muted text-foreground self-start">
+                                                            Hello! How can I assist you today?
+                                                        </div>
+                                                        <div
+                                                            className="max-w-[85%] rounded-lg px-3 py-2 text-white self-end font-medium"
+                                                            style={{ backgroundColor: chatButtonColor }}
+                                                        >
+                                                            Can you show me our active workflows?
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Footer Input */}
+                                                    <div className="p-2.5 border-t bg-card flex items-center gap-2">
+                                                        <div className="flex-1 bg-muted/60 rounded-md px-3 py-1.5 text-xs text-muted-foreground">
+                                                            Type your message...
+                                                        </div>
+                                                        <div
+                                                            className="w-7 h-7 rounded-md flex items-center justify-center text-white"
+                                                            style={{ backgroundColor: chatButtonColor }}
+                                                        >
+                                                            <Send className="h-3.5 w-3.5" />
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             </div>
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setEmbedMode("headless")}
-                                            className={`p-4 rounded-lg border-2 transition-all ${
-                                                embedMode === "headless"
-                                                    ? "border-primary bg-primary/5"
-                                                    : "border-muted hover:border-muted-foreground/20"
-                                            }`}
-                                        >
-                                            <div className="space-y-2">
-                                                <div className="font-medium">Headless (Bring Your Own UI)</div>
-                                                <div className="text-xs text-muted-foreground">
-                                                    No UI - drive calls from your own buttons via the JS API
+                                        </div>
+
+                                        {/* Specification Highlights */}
+                                        <div className="grid grid-cols-2 gap-3 p-4 rounded-xl border bg-muted/30">
+                                            <div className="flex items-start gap-2.5">
+                                                <Globe className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
+                                                <div>
+                                                    <p className="text-xs font-semibold">Global Scope</p>
+                                                    <p className="text-[11px] text-muted-foreground">Persists across all application routes seamlessly.</p>
                                                 </div>
                                             </div>
-                                        </button>
+                                            <div className="flex items-start gap-2.5">
+                                                <RefreshCw className="h-4 w-4 text-emerald-500 mt-0.5 shrink-0" />
+                                                <div>
+                                                    <p className="text-xs font-semibold">Navigation Persistence</p>
+                                                    <p className="text-[11px] text-muted-foreground">In-chat links navigate in same tab keeping chat open.</p>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-start gap-2.5">
+                                                <ShieldCheck className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+                                                <div>
+                                                    <p className="text-xs font-semibold">State Hygiene & Teardown</p>
+                                                    <p className="text-[11px] text-muted-foreground">Closing widget terminates server session and resets context.</p>
+                                                </div>
+                                            </div>
+                                            <div className="flex items-start gap-2.5">
+                                                <Lock className="h-4 w-4 text-purple-500 mt-0.5 shrink-0" />
+                                                <div>
+                                                    <p className="text-xs font-semibold">Singleton & sessionStorage</p>
+                                                    <p className="text-[11px] text-muted-foreground">Tab-scoped storage with zero cross-tab memory bleed.</p>
+                                                </div>
+                                            </div>
+                                        </div>
                                     </div>
-                                </div>
+                                )}
 
-                                {/* Configuration based on mode */}
-                                <div className="space-y-4">
-                                    <Label>Configuration</Label>
-
-                                    {/* Shared: Button Text + Button Color (skipped in headless — host renders its own UI) */}
-                                    {embedMode !== "headless" && (
-                                        <div className="grid grid-cols-2 gap-4">
-                                            <div className="space-y-2">
-                                                <Label htmlFor="button-text" className="text-sm">Button Text</Label>
-                                                <Input
-                                                    id="button-text"
-                                                    value={buttonText}
-                                                    onChange={(e) => setButtonText(e.target.value)}
-                                                    placeholder="Talk to Agent"
-                                                    maxLength={40}
-                                                />
-                                            </div>
-                                            <div className="space-y-2">
-                                                <Label htmlFor="button-color" className="text-sm">Button Color</Label>
-                                                <div className="flex gap-2">
-                                                    <Input
-                                                        id="button-color-picker"
-                                                        type="color"
-                                                        value={buttonColor}
-                                                        onChange={(e) => setButtonColor(e.target.value)}
-                                                        className="w-14 h-10 cursor-pointer"
-                                                    />
-                                                    <Input
-                                                        id="button-color"
-                                                        value={buttonColor}
-                                                        onChange={(e) => setButtonColor(e.target.value)}
-                                                        placeholder="#10b981"
-                                                        className="flex-1"
-                                                    />
-                                                </div>
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* Floating mode: Position */}
-                                    {embedMode === "floating" && (
-                                        <div className="space-y-2">
-                                            <Label htmlFor="position" className="text-sm">Position</Label>
-                                            <Select value={position} onValueChange={setPosition}>
-                                                <SelectTrigger id="position">
-                                                    <SelectValue />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                    <SelectItem value="bottom-right">Bottom Right</SelectItem>
-                                                    <SelectItem value="bottom-left">Bottom Left</SelectItem>
-                                                    <SelectItem value="top-right">Top Right</SelectItem>
-                                                    <SelectItem value="top-left">Top Left</SelectItem>
-                                                </SelectContent>
-                                            </Select>
-                                        </div>
-                                    )}
-
-                                    {/* Inline mode: Call to Action Text */}
-                                    {embedMode === "inline" && (
-                                        <div className="space-y-2">
-                                            <Label htmlFor="cta-text" className="text-sm">Call to Action Text</Label>
-                                            <Input
-                                                id="cta-text"
-                                                value={callToActionText}
-                                                onChange={(e) => setCallToActionText(e.target.value)}
-                                                placeholder="Click to start voice conversation"
-                                            />
-                                        </div>
-                                    )}
-
-                                    {/* Preview (skipped for headless — host renders its own UI) */}
-                                    {embedMode === "headless" ? null : embedMode === "floating" ? (
-                                        <div className="rounded-lg border bg-muted/30 p-6 flex items-center justify-center">
-                                            <button
-                                                className="inline-flex items-center gap-2 rounded-full px-5 py-3 font-medium text-white shadow-lg whitespace-nowrap"
-                                                style={{ backgroundColor: buttonColor }}
-                                            >
-                                                <Mic className="h-4 w-4" />
-                                                {buttonText || "Talk to Agent"}
-                                            </button>
-                                        </div>
-                                    ) : (
-                                        <div className="rounded-lg border bg-background p-6 flex items-center justify-center">
-                                            <div className="text-center">
-                                                <svg className="w-16 h-16 mx-auto mb-4 text-muted-foreground" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                                                    <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z" />
-                                                </svg>
-                                                <p className="text-lg font-medium text-foreground mb-1">Ready to Connect</p>
-                                                <p className="text-sm text-muted-foreground mb-5">{callToActionText}</p>
+                                {/* VOICE WIDGET CONFIGURATION */}
+                                {widgetType === "voice" && (
+                                    <div className="space-y-6">
+                                        {/* Embed Mode Selection */}
+                                        <div className="space-y-4">
+                                            <Label className="text-sm font-semibold">Voice Embed Mode</Label>
+                                            <div className="grid grid-cols-3 gap-4">
                                                 <button
-                                                    className="px-8 py-3 rounded-lg font-semibold text-white shadow-md"
-                                                    style={{ backgroundColor: buttonColor }}
+                                                    type="button"
+                                                    onClick={() => setEmbedMode("floating")}
+                                                    className={`p-4 rounded-lg border-2 transition-all ${
+                                                        embedMode === "floating"
+                                                            ? "border-primary bg-primary/5"
+                                                            : "border-muted hover:border-muted-foreground/20"
+                                                    }`}
                                                 >
-                                                    {buttonText}
+                                                    <div className="space-y-2">
+                                                        <div className="font-medium">Floating Widget</div>
+                                                        <div className="text-xs text-muted-foreground">
+                                                            Shows as a button in corner of the page
+                                                        </div>
+                                                    </div>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setEmbedMode("inline")}
+                                                    className={`p-4 rounded-lg border-2 transition-all ${
+                                                        embedMode === "inline"
+                                                            ? "border-primary bg-primary/5"
+                                                            : "border-muted hover:border-muted-foreground/20"
+                                                    }`}
+                                                >
+                                                    <div className="space-y-2">
+                                                        <div className="font-medium">Inline Component</div>
+                                                        <div className="text-xs text-muted-foreground">
+                                                            Embeds directly in your page content
+                                                        </div>
+                                                    </div>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setEmbedMode("headless")}
+                                                    className={`p-4 rounded-lg border-2 transition-all ${
+                                                        embedMode === "headless"
+                                                            ? "border-primary bg-primary/5"
+                                                            : "border-muted hover:border-muted-foreground/20"
+                                                    }`}
+                                                >
+                                                    <div className="space-y-2">
+                                                        <div className="font-medium">Headless (BYO UI)</div>
+                                                        <div className="text-xs text-muted-foreground">
+                                                            Drive calls from your own UI buttons via JS API
+                                                        </div>
+                                                    </div>
                                                 </button>
                                             </div>
                                         </div>
-                                    )}
 
-                                    {/* Headless mode: Integration Instructions */}
-                                    {embedMode === "headless" && (
-                                        <div className="space-y-3">
-                                            <div className="rounded-lg bg-muted/50 p-4">
-                                                <h4 className="font-medium mb-2">Integration Instructions</h4>
-                                                <ul className="text-sm space-y-2 text-muted-foreground">
-                                                    <li>• Add the embed script tag to your page (see below).</li>
-                                                    <li>• The widget renders no UI - render your own buttons.</li>
-                                                    <li>• Call <code className="text-xs">window.DograhWidget.start()</code> to begin a call.</li>
-                                                    <li>• Call <code className="text-xs">window.DograhWidget.end()</code> to end it.</li>
-                                                    <li>• Subscribe to <code className="text-xs">onCallStart</code>, <code className="text-xs">onCallEnd</code>, <code className="text-xs">onStatusChange</code>, <code className="text-xs">onError</code> to drive your UI.</li>
-                                                    <li>• <code className="text-xs">start()</code> must run inside a user-gesture handler (click) so the browser grants microphone access.</li>
-                                                </ul>
+                                        {/* Voice options */}
+                                        {embedMode !== "headless" && (
+                                            <div className="grid grid-cols-2 gap-4">
+                                                <div className="space-y-2">
+                                                    <Label htmlFor="button-text" className="text-sm">Button Text</Label>
+                                                    <Input
+                                                        id="button-text"
+                                                        value={buttonText}
+                                                        onChange={(e) => setButtonText(e.target.value)}
+                                                        placeholder="Talk to Agent"
+                                                        maxLength={40}
+                                                    />
+                                                </div>
+                                                <div className="space-y-2">
+                                                    <Label htmlFor="button-color" className="text-sm">Button Color</Label>
+                                                    <div className="flex gap-2">
+                                                        <Input
+                                                            type="color"
+                                                            value={buttonColor}
+                                                            onChange={(e) => setButtonColor(e.target.value)}
+                                                            className="w-14 h-10 cursor-pointer"
+                                                        />
+                                                        <Input
+                                                            id="button-color"
+                                                            value={buttonColor}
+                                                            onChange={(e) => setButtonColor(e.target.value)}
+                                                            className="flex-1"
+                                                        />
+                                                    </div>
+                                                </div>
                                             </div>
+                                        )}
 
-                                            <div className="rounded-lg bg-blue-50 dark:bg-blue-950/20 p-4 border border-blue-200 dark:border-blue-800">
-                                                <h4 className="font-medium mb-2 text-blue-900 dark:text-blue-100">Example - track status in your own state</h4>
-                                                <p className="text-xs text-blue-900/80 dark:text-blue-100/80 mb-2">
-                                                    Mirror the call status into a variable you control, then render whatever UI you like from it. The status values are <code className="text-xs">idle</code>, <code className="text-xs">connecting</code>, <code className="text-xs">connected</code>, <code className="text-xs">failed</code>.
-                                                </p>
-                                                <pre className="text-xs overflow-x-auto">
-                                                    <code className="text-blue-800 dark:text-blue-200">{`// Vanilla JS - keep your own state, render however you want
-let callStatus = 'idle';
-
-window.DograhWidget?.onStatusChange((status) => {
-  callStatus = status;
-  // ...trigger your render here (re-paint DOM, dispatch event, etc.)
-});
-
-document.getElementById('talk-btn').addEventListener('click', () => {
-  if (callStatus === 'connected' || callStatus === 'connecting') {
-    window.DograhWidget.end();
-  } else {
-    window.DograhWidget.start();
-  }
-});`}</code>
-                                                </pre>
-                                                <p className="text-xs text-blue-900/80 dark:text-blue-100/80 mt-3 mb-2">React:</p>
-                                                <pre className="text-xs overflow-x-auto">
-                                                    <code className="text-blue-800 dark:text-blue-200">{`function TalkButton() {
-  const [status, setStatus] = useState('idle');
-
-  useEffect(() => {
-    window.DograhWidget?.onStatusChange(setStatus);
-  }, []);
-
-  const isLive = status === 'connected' || status === 'connecting';
-  return (
-    <button onClick={() => isLive ? window.DograhWidget.end() : window.DograhWidget.start()}>
-      {/* render anything you want from \`status\` */}
-    </button>
-  );
-}`}</code>
-                                                </pre>
+                                        {embedMode === "floating" && (
+                                            <div className="space-y-2">
+                                                <Label htmlFor="position" className="text-sm">Position</Label>
+                                                <Select value={position} onValueChange={setPosition}>
+                                                    <SelectTrigger id="position">
+                                                        <SelectValue />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="bottom-right">Bottom Right</SelectItem>
+                                                        <SelectItem value="bottom-left">Bottom Left</SelectItem>
+                                                        <SelectItem value="top-right">Top Right</SelectItem>
+                                                        <SelectItem value="top-left">Top Left</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
                                             </div>
-                                        </div>
-                                    )}
+                                        )}
 
-                                    {/* Inline mode: Integration Instructions */}
-                                    {embedMode === "inline" && (
-                                        <div className="space-y-3">
-                                            <div className="rounded-lg bg-muted/50 p-4">
-                                                <h4 className="font-medium mb-2">Integration Instructions</h4>
-                                                <ul className="text-sm space-y-2 text-muted-foreground">
-                                                    <li>• Add a div with id=&quot;dograh-inline-container&quot; where you want the widget</li>
-                                                    <li>• The widget will render inside this container</li>
-                                                    <li>• You have full control over the container&apos;s styling</li>
-                                                    <li>• Call window.DograhWidget.start() to begin the call</li>
-                                                    <li>• Call window.DograhWidget.end() to end the call</li>
-                                                </ul>
+                                        {embedMode === "inline" && (
+                                            <div className="space-y-2">
+                                                <Label htmlFor="cta-text" className="text-sm">Call to Action Text</Label>
+                                                <Input
+                                                    id="cta-text"
+                                                    value={callToActionText}
+                                                    onChange={(e) => setCallToActionText(e.target.value)}
+                                                    placeholder="Click to start voice conversation"
+                                                />
                                             </div>
+                                        )}
 
-                                            <div className="rounded-lg bg-blue-50 dark:bg-blue-950/20 p-4 border border-blue-200 dark:border-blue-800">
-                                                <h4 className="font-medium mb-2 text-blue-900 dark:text-blue-100">Example React Component</h4>
-                                                <pre className="text-xs overflow-x-auto">
-                                                    <code className="text-blue-800 dark:text-blue-200">{`export function DograhAgent() {
-  const [isCallActive, setIsCallActive] = useState(false);
-
-  useEffect(() => {
-    // Widget will auto-initialize when script loads
-    window.DograhWidget?.onCallStart(() => {
-      setIsCallActive(true);
-    });
-    window.DograhWidget?.onCallEnd(() => {
-      setIsCallActive(false);
-    });
-  }, []);
-
-  return (
-    <div className="my-8">
-      <h2>Talk to Our Agent</h2>
-      <div id="dograh-inline-container" className="min-h-[400px]">
-        {/* Widget renders here */}
-      </div>
-      <button
-        onClick={() => window.DograhWidget?.start()}
-        disabled={isCallActive}
-      >
-        Start Call
-      </button>
-    </div>
-  );
-}`}</code>
-                                                </pre>
+                                        {/* Voice Preview */}
+                                        {embedMode === "floating" && (
+                                            <div className="rounded-lg border bg-muted/30 p-6 flex items-center justify-center">
+                                                <button
+                                                    className="inline-flex items-center gap-2 rounded-full px-5 py-3 font-medium text-white shadow-lg whitespace-nowrap"
+                                                    style={{ backgroundColor: buttonColor }}
+                                                >
+                                                    <Mic className="h-4 w-4" />
+                                                    {buttonText || "Talk to Agent"}
+                                                </button>
                                             </div>
-                                        </div>
-                                    )}
-                                </div>
+                                        )}
+                                    </div>
+                                )}
 
                                 <Separator />
 
@@ -554,39 +706,45 @@ document.getElementById('talk-btn').addEventListener('click', () => {
                                     </Button>
                                 </div>
 
-                                {/* Embed Script (shows after saving; placeholder before) */}
+                                {/* Embed Script Code Box */}
                                 {embedToken && embedToken.is_active ? (
                                     <>
                                         <Separator />
                                         <div className="space-y-3">
                                             <div className="flex items-center justify-between">
-                                                <Label>Embed Code</Label>
+                                                <div className="space-y-0.5">
+                                                    <Label className="text-sm font-semibold">
+                                                        {widgetType === "chat" ? "AgentX Chat Widget Snippet" : "Dograh Voice Widget Snippet"}
+                                                    </Label>
+                                                    <p className="text-xs text-muted-foreground">
+                                                        Copy this script tag into the HTML of your website or application
+                                                    </p>
+                                                </div>
                                                 <Button
                                                     size="sm"
                                                     variant="outline"
-                                                    onClick={() => copyToClipboard(embedToken.embed_script)}
+                                                    onClick={() => copyToClipboard(activeEmbedScript)}
                                                 >
                                                     {copied ? (
                                                         <>
-                                                            <Check className="h-4 w-4 mr-1" />
+                                                            <Check className="h-4 w-4 mr-1 text-emerald-500" />
                                                             Copied!
                                                         </>
                                                     ) : (
                                                         <>
                                                             <Copy className="h-4 w-4 mr-1" />
-                                                            Copy Code
+                                                            Copy Script Tag
                                                         </>
                                                     )}
                                                 </Button>
                                             </div>
                                             <div className="relative">
-                                                <pre className="bg-muted/50 rounded-lg p-4 text-xs overflow-x-auto whitespace-pre-wrap break-all">
-                                                    <code>{embedToken.embed_script}</code>
+                                                <pre className="bg-muted/70 border rounded-lg p-4 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all">
+                                                    <code>{activeEmbedScript}</code>
                                                 </pre>
                                             </div>
                                             <p className="text-xs text-muted-foreground">
-                                                Add this script to your website&apos;s HTML to enable the voice widget.
-                                                Configuration changes will apply automatically without re-embedding.
+                                                Changes saved to configurations will take effect immediately without requiring code re-embedding.
                                             </p>
                                         </div>
                                     </>
@@ -596,7 +754,7 @@ document.getElementById('talk-btn').addEventListener('click', () => {
                                         <div className="space-y-3">
                                             <Label className="text-muted-foreground">Embed Code</Label>
                                             <div className="rounded-lg border border-dashed bg-muted/30 px-4 py-8 text-center text-sm text-muted-foreground">
-                                                Click <span className="font-medium">Save Configurations</span> to generate your embed script.
+                                                Click <span className="font-medium text-foreground">Save Configurations</span> to activate your token and generate the embed script.
                                             </div>
                                         </div>
                                     </>
