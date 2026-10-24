@@ -25,6 +25,7 @@ import { WorkflowConfigurations } from '@/types/workflow-configurations';
 import AddNodePanel from "../../../components/flow/AddNodePanel";
 import CustomEdge from "../../../components/flow/edges/CustomEdge";
 import { GenericNode } from "../../../components/flow/nodes/GenericNode";
+import { EmbedDialog } from './components/EmbedDialog';
 import { PhoneCallDialog } from './components/PhoneCallDialog';
 import { VersionHistoryPanel, WorkflowVersion } from './components/VersionHistoryPanel';
 import type { WorkflowRuntimeNodeTransition } from './components/workflow-tester/types';
@@ -99,6 +100,7 @@ function RenderWorkflow({
     const [tools, setTools] = useState<ToolResponse[] | undefined>(undefined);
     const [recordings, setRecordings] = useState<RecordingResponseSchema[]>([]);
     const [activeRuntimeNodeId, setActiveRuntimeNodeId] = useState<string | null>(null);
+    const [isEmbedDialogOpen, setIsEmbedDialogOpen] = useState(false);
 
     const {
         rfInstance,
@@ -529,6 +531,7 @@ function RenderWorkflow({
                     hasDraft={hasDraft}
                     onPublished={handlePublished}
                     renameWorkflow={renameWorkflow}
+                    onEmbedClick={() => setIsEmbedDialogOpen(true)}
                 />
 
                 {/* Workflow Canvas */}
@@ -739,6 +742,13 @@ function RenderWorkflow({
                     onOpenChange={setIsPhoneCallDialogOpen}
                     workflowId={workflowId}
                     user={user}
+                />
+
+                <EmbedDialog
+                    open={isEmbedDialogOpen}
+                    onOpenChange={setIsEmbedDialogOpen}
+                    workflowId={workflowId}
+                    workflowName={workflowName}
                 />
             </div>
         </WorkflowProvider>

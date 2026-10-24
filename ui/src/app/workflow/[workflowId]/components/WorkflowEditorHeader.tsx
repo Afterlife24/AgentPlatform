@@ -46,6 +46,7 @@ interface WorkflowEditorHeaderProps {
     hasDraft: boolean;
     onPublished: () => void;
     renameWorkflow: (newName: string) => Promise<void>;
+    onEmbedClick?: () => void;
 }
 
 export const WorkflowEditorHeader = ({
@@ -65,6 +66,7 @@ export const WorkflowEditorHeader = ({
     workflowId,
     workflowUuid,
     renameWorkflow,
+    onEmbedClick,
 }: WorkflowEditorHeaderProps) => {
     const router = useRouter();
     const { toggleSidebar } = useSidebar();
@@ -428,6 +430,16 @@ export const WorkflowEditorHeader = ({
                     Test Agent
                 </Button>
 
+                <Button
+                    variant="outline"
+                    className="flex items-center gap-2 bg-transparent border-[#3a3a3a] hover:bg-[#2a2a2a] text-white"
+                    onClick={onEmbedClick}
+                    title="Add to Website (Chat & Voice Widget)"
+                >
+                    <Rocket className="w-4 h-4 text-blue-400" />
+                    Add to Website
+                </Button>
+
                 {/* Save button (only shown when editing the draft) */}
                 {!isViewingHistoricalVersion && (
                     <Button
@@ -458,6 +470,13 @@ export const WorkflowEditorHeader = ({
                         </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end" className="bg-[#1a1a1a] border-[#3a3a3a]">
+                        <DropdownMenuItem
+                            onClick={onEmbedClick}
+                            className="text-white hover:bg-[#2a2a2a] cursor-pointer"
+                        >
+                            <Rocket className="w-4 h-4 mr-2 text-blue-400" />
+                            Add to Website
+                        </DropdownMenuItem>
                         <DropdownMenuItem
                             onClick={() => router.push(`/workflow/${workflowId}/runs`)}
                             className="text-white hover:bg-[#2a2a2a] cursor-pointer"
