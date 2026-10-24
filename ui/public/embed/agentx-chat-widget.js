@@ -66,11 +66,11 @@
     isLoading: false,
     messages: [],
     config: {
-      title: 'AI Consultant',
-      subtitle: 'Online • Ready to assist',
-      buttonColor: '#2563eb',
-      buttonText: 'Chat with Us',
-      position: 'bottom-right',
+      title: scriptUrl.searchParams.get('title') || scriptTag.getAttribute('data-title') || 'AI Assistant',
+      subtitle: scriptUrl.searchParams.get('subtitle') || scriptTag.getAttribute('data-subtitle') || 'Online • Ready to assist',
+      buttonColor: scriptUrl.searchParams.get('buttonColor') || scriptTag.getAttribute('data-button-color') || '#2563eb',
+      buttonText: scriptUrl.searchParams.get('buttonText') || scriptTag.getAttribute('data-button-text') || 'Chat with us',
+      position: scriptUrl.searchParams.get('position') || scriptTag.getAttribute('data-position') || 'bottom-right',
     },
   };
 
@@ -968,10 +968,10 @@
       </div>
 
       <div class="agentx-teaser" id="agentx-teaser">
-        <span>💬 Have questions? Chat with AI</span>
+        <span>💬 ${state.config.buttonText}</span>
       </div>
 
-      <button class="agentx-chat-trigger ${state.isOpen ? 'is-open' : ''}" id="agentx-chat-trigger" title="${state.config.buttonText}" aria-label="Open chat">
+      <button class="agentx-chat-trigger ${state.isOpen ? 'is-open' : ''}" id="agentx-chat-trigger" title="${state.config.buttonText}" aria-label="Open chat" style="background: ${state.config.buttonColor};">
         <div class="agentx-trigger-badge"></div>
         <div class="agentx-icon-chat">
           <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor">
