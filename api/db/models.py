@@ -30,6 +30,11 @@ from ..enums import (
     CallType,
     CreditLedgerEntryType,
     IntegrationAction,
+    ModelPricingChangeType,
+    ModelPricingKind,
+    ModelPricingSource,
+    ModelPricingStatus,
+    ModelPricingUnit,
     ToolCategory,
     ToolStatus,
     TriggerState,
@@ -1806,6 +1811,16 @@ class CreditLedgerEntryModel(Base):
         comment="Human-readable note for manual adjustments, refunds",
     )
 
+    # Per-component billing breakdown (speech-billing spec §9.2): the quantities,
+    # rates, and subtotals for llm/tts/stt/embedding plus markup and total, so a
+    # disputed charge can be reconstructed. STT block carries "source":
+    # "metrics" | "call_duration_fallback".
+    usage_breakdown = Column(
+        JSON,
+        nullable=True,
+        comment="Per-component billing breakdown (llm/tts/stt/embedding, rates, subtotals)",
+    )
+
     # Timestamps (immutable — no updated_at)
     created_at = Column(
         DateTime(timezone=True),
@@ -1832,4 +1847,307 @@ class CreditLedgerEntryModel(Base):
             postgresql_using="btree",
         ),
         Index("ix_ledger_entries_entry_type", "entry_type"),
+    )
+
+
+# ─────────────────────────── Dynamic Model Pricing ───────────────────────────
+
+
+class ModelPricingModel(Base):
+    """Versioned per-model pricing.
+
+    One row per model *version*. Chat/embedding rows are synced from LiteLLM;
+    TTS/STT rows are entered manually by an admin. A price change never
+    overwrites a row — the current row is closed (effective_to set) and a new
+    row inserted (effective_from set), so history is preserved and billing can
+    reference the exact rate version active at execution time.
+
+    Rate columns by kind:
+      - chat:       input_per_1m, output_per_1m, cached_input_per_1m (stored, not billed)
+      - embedding:  embedding_per_1m
+      - tts:        rate (USD per 1,000,000 characters)
+      - stt:        rate (USD per hour of audio)
+    """
+
+    __tablename__ = "model_pricing"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    provider = Column(
+        String(64),
+        nullable=False,
+        index=True,
+        comment="Provider key, e.g. openai/anthropic/google/groq/cartesia",
+    )
+    model_identifier = Column(
+        String(255),
+        nullable=False,
+        index=True,
+        comment="Model id, e.g. gpt-4.1, text-embedding-3-small, sonic-3.5",
+    )
+
+    kind = Column(
+        Enum(*[k.value for k in ModelPricingKind], name="model_pricing_kind"),
+        nullable=False,
+        index=True,
+        comment="chat / embedding / tts / stt",
+    )
+    source = Column(
+        Enum(*[s.value for s in ModelPricingSource], name="model_pricing_source"),
+        nullable=False,
+        comment="litellm (chat/embedding) or manual (tts/stt)",
+    )
+    unit = Column(
+        Enum(*[u.value for u in ModelPricingUnit], name="model_pricing_unit"),
+        nullable=False,
+        comment="per_1m_token (chat/embedding) / per_1m_char (tts) / per_hour (stt)",
+    )
+
+    # Chat rates (per 1M tokens). Null for embedding/tts/stt.
+    input_per_1m = Column(Numeric(18, 6), nullable=True, comment="Chat input rate per 1M tokens")
+    output_per_1m = Column(Numeric(18, 6), nullable=True, comment="Chat output rate per 1M tokens")
+    cached_input_per_1m = Column(
+        Numeric(18, 6),
+        nullable=True,
+        comment="Chat cached-input rate per 1M tokens (stored, NOT billed)",
+    )
+    # Embedding rate (per 1M tokens). Null for chat/tts/stt.
+    embedding_per_1m = Column(Numeric(18, 6), nullable=True, comment="Embedding rate per 1M tokens")
+    # Speech-to-speech realtime rates (per 1M tokens). Null for every other kind.
+    # Realtime models bill text and audio tokens at different rates, in and out.
+    rt_text_input_per_1m = Column(
+        Numeric(18, 6), nullable=True, comment="Realtime text input rate per 1M tokens"
+    )
+    rt_text_output_per_1m = Column(
+        Numeric(18, 6), nullable=True, comment="Realtime text output rate per 1M tokens"
+    )
+    rt_audio_input_per_1m = Column(
+        Numeric(18, 6), nullable=True, comment="Realtime audio input rate per 1M tokens"
+    )
+    rt_audio_output_per_1m = Column(
+        Numeric(18, 6), nullable=True, comment="Realtime audio output rate per 1M tokens"
+    )
+    # Single rate for tts / stt. UNITS (per speech-billing spec):
+    #   tts -> USD per 1,000,000 characters
+    #   stt -> USD per hour of audio
+    rate = Column(
+        Numeric(18, 6),
+        nullable=True,
+        comment="TTS: USD per 1M characters. STT: USD per hour of audio.",
+    )
+
+    # Rate provenance (speech-billing spec §8.3). When a human last verified the
+    # rate against the vendor's page, a free-text note, and who last changed it.
+    rate_last_checked_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="When a human last verified this rate against the vendor page",
+    )
+    notes = Column(Text, nullable=True, comment="Operator note, e.g. pricing-tier reasoning")
+    updated_by = Column(String(255), nullable=True, comment="Audit: who last changed this rate")
+
+    status = Column(
+        Enum(*[s.value for s in ModelPricingStatus], name="model_pricing_status"),
+        nullable=False,
+        server_default=text("'active'"),
+        index=True,
+        comment="active / deprecated / missing (catalog reality)",
+    )
+    is_enabled = Column(
+        Boolean,
+        nullable=False,
+        server_default=text("false"),
+        index=True,
+        comment="Admin toggle: whether this model is offered in AgentX",
+    )
+
+    # Versioning window
+    effective_from = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+        comment="When this price version became active",
+    )
+    effective_to = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="When this version was superseded (null = current version)",
+    )
+
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    __table_args__ = (
+        Index("ix_model_pricing_provider_model", "provider", "model_identifier"),
+        Index("ix_model_pricing_kind", "kind"),
+        Index("ix_model_pricing_status", "status"),
+        Index("ix_model_pricing_is_enabled", "is_enabled"),
+        # Only one CURRENT (effective_to IS NULL) row per provider+model.
+        Index(
+            "uq_model_pricing_current",
+            "provider",
+            "model_identifier",
+            unique=True,
+            postgresql_where=text("effective_to IS NULL"),
+        ),
+    )
+
+
+class ModelProviderSettingsModel(Base):
+    """Per-provider admin enable/disable.
+
+    Disabling a provider hides all of its models from AgentX regardless of each
+    model's own is_enabled flag.
+    """
+
+    __tablename__ = "model_provider_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    provider = Column(
+        String(64),
+        nullable=False,
+        unique=True,
+        index=True,
+        comment="Provider key (openai/anthropic/google/groq/cartesia/...)",
+    )
+    is_enabled = Column(
+        Boolean,
+        nullable=False,
+        server_default=text("true"),
+        comment="If false, hide all of this provider's models from AgentX",
+    )
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class ModelPricingPendingModel(Base):
+    """Approval queue for LiteLLM sync differentials.
+
+    The weekly (or manual) sync writes new/changed/deprecated chat & embedding
+    models here. Nothing affects live pricing until an admin approves a row,
+    which then writes to model_pricing. STT/TTS are manual and never land here.
+    """
+
+    __tablename__ = "model_pricing_pending"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    provider = Column(String(64), nullable=False, index=True)
+    model_identifier = Column(String(255), nullable=False, index=True)
+    kind = Column(
+        Enum(*[k.value for k in ModelPricingKind], name="model_pricing_kind"),
+        nullable=False,
+    )
+    change_type = Column(
+        Enum(*[c.value for c in ModelPricingChangeType], name="model_pricing_change_type"),
+        nullable=False,
+        comment="new / price_change / deprecated",
+    )
+
+    # Proposed rates from the catalog (per 1M tokens).
+    proposed_input_per_1m = Column(Numeric(18, 6), nullable=True)
+    proposed_output_per_1m = Column(Numeric(18, 6), nullable=True)
+    proposed_cached_input_per_1m = Column(Numeric(18, 6), nullable=True)
+    proposed_embedding_per_1m = Column(Numeric(18, 6), nullable=True)
+    # Proposed speech-to-speech realtime rates (per 1M tokens).
+    proposed_rt_text_input_per_1m = Column(Numeric(18, 6), nullable=True)
+    proposed_rt_text_output_per_1m = Column(Numeric(18, 6), nullable=True)
+    proposed_rt_audio_input_per_1m = Column(Numeric(18, 6), nullable=True)
+    proposed_rt_audio_output_per_1m = Column(Numeric(18, 6), nullable=True)
+    proposed_status = Column(
+        Enum(*[s.value for s in ModelPricingStatus], name="model_pricing_status"),
+        nullable=True,
+    )
+
+    # Current live values (for admin comparison in the UI).
+    current_input_per_1m = Column(Numeric(18, 6), nullable=True)
+    current_output_per_1m = Column(Numeric(18, 6), nullable=True)
+    current_cached_input_per_1m = Column(Numeric(18, 6), nullable=True)
+    current_embedding_per_1m = Column(Numeric(18, 6), nullable=True)
+    # Current speech-to-speech realtime rates (per 1M tokens).
+    current_rt_text_input_per_1m = Column(Numeric(18, 6), nullable=True)
+    current_rt_text_output_per_1m = Column(Numeric(18, 6), nullable=True)
+    current_rt_audio_input_per_1m = Column(Numeric(18, 6), nullable=True)
+    current_rt_audio_output_per_1m = Column(Numeric(18, 6), nullable=True)
+
+    sync_run_id = Column(
+        String(64),
+        nullable=True,
+        index=True,
+        comment="Groups all pending rows produced by a single sync run",
+    )
+    detected_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_model_pricing_pending_provider_model", "provider", "model_identifier"),
+        Index("ix_model_pricing_pending_sync_run", "sync_run_id"),
+    )
+
+
+class ModelUsageAuditModel(Base):
+    """Immutable per-run billing audit.
+
+    Append-only. One row per billed workflow run records the usage counts, the
+    exact pricing version(s) applied, and the final computed charge — so any
+    charge can be reconstructed from the rate active at execution time.
+    """
+
+    __tablename__ = "model_usage_audit"
+
+    id = Column(Integer, primary_key=True, index=True)
+    workflow_run_id = Column(
+        Integer,
+        ForeignKey("workflow_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # Which models were used (nullable — a run may not use every service).
+    chat_model = Column(String(255), nullable=True)
+    embedding_model = Column(String(255), nullable=True)
+    tts_model = Column(String(255), nullable=True)
+    stt_model = Column(String(255), nullable=True)
+
+    # Usage counts, each in its own unit.
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    embedding_tokens = Column(Integer, nullable=True)
+    tts_characters = Column(Integer, nullable=True)
+    stt_seconds = Column(Numeric(18, 3), nullable=True)
+
+    # The chat pricing row used, for traceability (the primary driver of cost).
+    chat_pricing_version_id = Column(
+        Integer,
+        ForeignKey("model_pricing.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    computed_charge_usd = Column(
+        Numeric(18, 6),
+        nullable=False,
+        comment="Final USD charge written to the wallet for this run",
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )
+
+    __table_args__ = (
+        Index("ix_model_usage_audit_workflow_run_id", "workflow_run_id"),
+        Index("ix_model_usage_audit_created_at", "created_at"),
     )

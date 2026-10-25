@@ -13,7 +13,12 @@ from api.constants import (
 from api.db import db_client
 from api.db.models import UserModel
 from api.db.telephony_configuration_client import TelephonyConfigurationInUseError
-from api.enums import OrganizationConfigurationKey, PostHogEvent
+from api.enums import (
+    ModelPricingKind,
+    ModelPricingStatus,
+    OrganizationConfigurationKey,
+    PostHogEvent,
+)
 from api.schemas.ai_model_configuration import (
     DOGRAH_DEFAULT_LANGUAGE,
     DOGRAH_DEFAULT_VOICE,
@@ -230,12 +235,148 @@ def _dograh_allows_custom_voice() -> bool:
     return False
 
 
-def _byok_provider_schemas(service_type: ServiceType) -> dict[str, dict]:
-    return {
+# Section 1 provider curation: the only providers a customer may pick, per
+# service type. Applied in both the Speech-to-Speech and Afterlife (ex-BYOK)
+# tabs — the same ServiceType.LLM/EMBEDDINGS lists back both tabs, so one
+# allow-list per service type covers every dropdown. Dograh is already excluded
+# separately (managed-key path, not a user-selectable provider here).
+_ALLOWED_PROVIDERS_BY_SERVICE: dict[ServiceType, set[str]] = {
+    # Chat LLM: OpenAI, Gemini (google), Groq, Claude (anthropic).
+    ServiceType.LLM: {
+        ServiceProviders.OPENAI.value,
+        ServiceProviders.GOOGLE.value,
+        ServiceProviders.GROQ.value,
+        ServiceProviders.ANTHROPIC.value,
+    },
+    # Speech-to-Speech realtime: OpenAI / Grok / Google realtime only.
+    ServiceType.REALTIME: {
+        ServiceProviders.OPENAI_REALTIME.value,
+        ServiceProviders.GROK_REALTIME.value,
+        ServiceProviders.GOOGLE_REALTIME.value,
+    },
+    # Voice (TTS): Deepgram, Cartesia, OpenAI, ElevenLabs.
+    ServiceType.TTS: {
+        ServiceProviders.DEEPGRAM.value,
+        ServiceProviders.CARTESIA.value,
+        ServiceProviders.OPENAI.value,
+        ServiceProviders.ELEVENLABS.value,
+    },
+    # Transcriber (STT): Deepgram, Cartesia, OpenAI.
+    ServiceType.STT: {
+        ServiceProviders.DEEPGRAM.value,
+        ServiceProviders.CARTESIA.value,
+        ServiceProviders.OPENAI.value,
+    },
+    # Embeddings: OpenAI only.
+    ServiceType.EMBEDDINGS: {
+        ServiceProviders.OPENAI.value,
+    },
+}
+
+
+# ServiceType → the pricing kind whose enabled DB rows drive this dropdown.
+# REALTIME has no pricing kind (realtime models aren't synced/priced), so it
+# keeps its hardcoded registry examples.
+_SERVICE_TYPE_TO_PRICING_KIND = {
+    ServiceType.LLM: ModelPricingKind.CHAT,
+    ServiceType.EMBEDDINGS: ModelPricingKind.EMBEDDING,
+    ServiceType.TTS: ModelPricingKind.TTS,
+    ServiceType.STT: ModelPricingKind.STT,
+    # Speech-to-speech: realtime dropdown is driven by enabled s2s pricing rows.
+    ServiceType.REALTIME: ModelPricingKind.SPEECH_TO_SPEECH,
+}
+
+# Realtime registry providers are keyed "<x>_realtime", but speech-to-speech
+# pricing rows are keyed by the plain provider ("openai", "google"). Translate
+# so the realtime dropdown matches enabled pricing rows. Grok is intentionally
+# absent (dropped), so it has no pricing source and falls away from the picker.
+_REALTIME_PROVIDER_TO_PRICING = {
+    ServiceProviders.OPENAI_REALTIME.value: ServiceProviders.OPENAI.value,
+    ServiceProviders.GOOGLE_REALTIME.value: ServiceProviders.GOOGLE.value,
+}
+
+
+def _set_schema_model_examples(schema: dict, models: list[str]) -> None:
+    """Replace a provider schema's `model` field dropdown options with `models`.
+
+    The UI reads the model dropdown from the `model` property's `examples`
+    (json_schema_extra). We overwrite it so only admin-enabled DB models show.
+    """
+    props = schema.get("properties") or {}
+    model_prop = props.get("model")
+    if isinstance(model_prop, dict):
+        model_prop["examples"] = models
+        # Keep custom input off (Section 1): the curated list is authoritative.
+        model_prop["allow_custom_input"] = False
+
+
+async def _byok_provider_schemas(service_type: ServiceType) -> dict[str, dict]:
+    """Build the provider→schema map for a service type's dropdowns.
+
+    Providers are first restricted to the Section-1 allow-list. Then, for
+    service types backed by the pricing DB (chat/embedding/tts/stt), each
+    provider's model dropdown is driven by the admin-ENABLED + ACTIVE models in
+    model_pricing, and a provider the admin DISABLED (or that has no enabled
+    models) is dropped entirely. REALTIME keeps its hardcoded examples.
+
+    Fallback: if the pricing DB is empty for this kind (e.g. before the first
+    sync), the hardcoded registry examples are kept so the picker never goes
+    blank on a fresh install.
+    """
+    allowed = _ALLOWED_PROVIDERS_BY_SERVICE.get(service_type)
+    base = {
         provider: model_cls.model_json_schema()
         for provider, model_cls in REGISTRY[service_type].items()
         if provider != ServiceProviders.DOGRAH.value
+        and (allowed is None or provider in allowed)
     }
+
+    kind = _SERVICE_TYPE_TO_PRICING_KIND.get(service_type)
+    if kind is None:
+        # Realtime (or any non-priced type): keep hardcoded examples.
+        return base
+
+    # Enabled + active models for this kind, grouped by provider.
+    try:
+        rows = await db_client.list_pricing(current_only=True, kind=kind)
+    except Exception:
+        return base
+
+    provider_settings = {}
+    try:
+        for s in await db_client.list_provider_settings():
+            provider_settings[s.provider] = s.is_enabled
+    except Exception:
+        provider_settings = {}
+
+    enabled_by_provider: dict[str, list[str]] = {}
+    for row in rows:
+        if row.status != ModelPricingStatus.ACTIVE.value or not row.is_enabled:
+            continue
+        if provider_settings.get(row.provider, True) is False:
+            continue  # provider disabled → skip all its models
+        enabled_by_provider.setdefault(row.provider, []).append(row.model_identifier)
+
+    # If the DB has NO enabled rows at all for this kind, fall back to the
+    # hardcoded registry so the dropdown isn't empty pre-sync.
+    if not enabled_by_provider:
+        return base
+
+    result: dict[str, dict] = {}
+    for provider, schema in base.items():
+        # Realtime registry providers ("openai_realtime") map to plain pricing
+        # provider keys ("openai"); every other service type matches directly.
+        pricing_provider = (
+            _REALTIME_PROVIDER_TO_PRICING.get(provider, provider)
+            if service_type == ServiceType.REALTIME
+            else provider
+        )
+        models = sorted(enabled_by_provider.get(pricing_provider, []))
+        if not models:
+            continue  # provider disabled or no enabled models → omit it
+        _set_schema_model_examples(schema, models)
+        result[provider] = schema
+    return result
 
 
 async def _model_configuration_v2_response(
@@ -268,6 +409,14 @@ async def get_model_configuration_v2_defaults(
         for service, provider in DEFAULT_SERVICE_PROVIDERS.items()
         if provider != ServiceProviders.DOGRAH.value
     }
+
+    # Schemas are DB-driven now (enabled+active models), so compute each once.
+    llm_schemas = await _byok_provider_schemas(ServiceType.LLM)
+    tts_schemas = await _byok_provider_schemas(ServiceType.TTS)
+    stt_schemas = await _byok_provider_schemas(ServiceType.STT)
+    embeddings_schemas = await _byok_provider_schemas(ServiceType.EMBEDDINGS)
+    realtime_schemas = await _byok_provider_schemas(ServiceType.REALTIME)
+
     return {
         "dograh": {
             "voices": [DOGRAH_DEFAULT_VOICE],
@@ -288,16 +437,16 @@ async def get_model_configuration_v2_defaults(
         },
         "byok": {
             "pipeline": {
-                "llm": _byok_provider_schemas(ServiceType.LLM),
-                "tts": _byok_provider_schemas(ServiceType.TTS),
-                "stt": _byok_provider_schemas(ServiceType.STT),
-                "embeddings": _byok_provider_schemas(ServiceType.EMBEDDINGS),
+                "llm": llm_schemas,
+                "tts": tts_schemas,
+                "stt": stt_schemas,
+                "embeddings": embeddings_schemas,
                 "default_providers": byok_default_providers,
             },
             "realtime": {
-                "realtime": _byok_provider_schemas(ServiceType.REALTIME),
-                "llm": _byok_provider_schemas(ServiceType.LLM),
-                "embeddings": _byok_provider_schemas(ServiceType.EMBEDDINGS),
+                "realtime": realtime_schemas,
+                "llm": llm_schemas,
+                "embeddings": embeddings_schemas,
                 "default_providers": byok_default_providers,
             },
         },

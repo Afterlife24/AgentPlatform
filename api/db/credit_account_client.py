@@ -32,6 +32,7 @@ class CreditAccountClient(BaseDBClient):
         fx_rate_to_usd: Optional[Decimal] = None,
         payment_provider_reference: Optional[str] = None,
         memo: Optional[str] = None,
+        usage_breakdown: Optional[dict] = None,
     ) -> CreditLedgerEntryModel:
         """Apply a credit ledger entry atomically with idempotency.
 
@@ -108,6 +109,7 @@ class CreditAccountClient(BaseDBClient):
                 fx_rate_to_usd=fx_rate_to_usd,
                 payment_provider_reference=payment_provider_reference,
                 memo=memo,
+                usage_breakdown=usage_breakdown,
                 created_at=datetime.now(UTC),
             )
             session.add(ledger_entry)

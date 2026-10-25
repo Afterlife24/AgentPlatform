@@ -193,6 +193,52 @@ class CreditLedgerEntryType(Enum):
     ADJUSTMENT = "adjustment"  # Manual correction
 
 
+class ModelPricingKind(Enum):
+    """What kind of model a pricing row describes."""
+
+    CHAT = "chat"  # LLM chat models (per-token, from LiteLLM)
+    EMBEDDING = "embedding"  # Embedding models (per-token, from LiteLLM)
+    TTS = "tts"  # Text-to-speech (per-character, manual)
+    STT = "stt"  # Speech-to-text (per-second, manual)
+    # Speech-to-speech realtime models (OpenAI/Gemini realtime, from LiteLLM).
+    # Billed on four per-1M-token rates: text-in, text-out, audio-in, audio-out.
+    SPEECH_TO_SPEECH = "speech_to_speech"
+
+
+class ModelPricingSource(Enum):
+    """Where a pricing row's rates come from."""
+
+    LITELLM = "litellm"  # Synced from LiteLLM catalog (chat/embedding)
+    MANUAL = "manual"  # Entered by an admin in the dashboard (tts/stt)
+
+
+class ModelPricingUnit(Enum):
+    """The billing unit a rate is expressed in."""
+
+    PER_1M_TOKEN = "per_1m_token"  # chat/embedding
+    PER_1M_CHAR = "per_1m_char"  # tts (USD per 1,000,000 characters)
+    PER_HOUR = "per_hour"  # stt (USD per hour of audio)
+    # Legacy (pre-spec) units, kept so old rows still load. New rows use the two above.
+    PER_CHARACTER = "per_character"  # deprecated tts unit
+    PER_SECOND = "per_second"  # deprecated stt unit
+
+
+class ModelPricingStatus(Enum):
+    """Catalog lifecycle status of a model."""
+
+    ACTIVE = "active"
+    DEPRECATED = "deprecated"
+    MISSING = "missing"  # No longer present in the LiteLLM catalog (provider dropped it)
+
+
+class ModelPricingChangeType(Enum):
+    """Type of pending change awaiting admin approval."""
+
+    NEW = "new"  # Newly discovered model
+    PRICE_CHANGE = "price_change"  # Rate changed upstream
+    DEPRECATED = "deprecated"  # Model removed/deprecated upstream
+
+
 class PostHogEvent(str, Enum):
     """PostHog event names — backend events only."""
 
@@ -212,3 +258,4 @@ class PostHogEvent(str, Enum):
     SIGNED_IN = "signed_in"
     ORGANIZATION_CREATED = "organization_created"
     ORGANIZATION_USER_ASSOCIATED = "organization_user_associated"
+    MODEL_PRICING_SYNCED = "model_pricing_synced"

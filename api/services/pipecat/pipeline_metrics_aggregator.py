@@ -87,6 +87,13 @@ class PipelineMetricsAggregator(FrameProcessor):
         key = f"{data.processor}|||{data.model}"
         new_usage = data.value
 
+        def _sum_optional(a, b):
+            # None + None stays None (modality not reported); otherwise sum,
+            # treating a missing side as 0 so a mixed stream still accumulates.
+            if a is None and b is None:
+                return None
+            return (a or 0) + (b or 0)
+
         if key in self._llm_usage_metrics:
             # Aggregate with existing metrics
             existing = self._llm_usage_metrics[key]
@@ -99,6 +106,18 @@ class PipelineMetricsAggregator(FrameProcessor):
                 + (new_usage.cache_read_input_tokens or 0),
                 cache_creation_input_tokens=(existing.cache_creation_input_tokens or 0)
                 + (new_usage.cache_creation_input_tokens or 0),
+                prompt_text_tokens=_sum_optional(
+                    existing.prompt_text_tokens, new_usage.prompt_text_tokens
+                ),
+                prompt_audio_tokens=_sum_optional(
+                    existing.prompt_audio_tokens, new_usage.prompt_audio_tokens
+                ),
+                completion_text_tokens=_sum_optional(
+                    existing.completion_text_tokens, new_usage.completion_text_tokens
+                ),
+                completion_audio_tokens=_sum_optional(
+                    existing.completion_audio_tokens, new_usage.completion_audio_tokens
+                ),
             )
             self._llm_usage_metrics[key] = aggregated
         else:
@@ -109,6 +128,10 @@ class PipelineMetricsAggregator(FrameProcessor):
                 total_tokens=new_usage.total_tokens,
                 cache_read_input_tokens=new_usage.cache_read_input_tokens,
                 cache_creation_input_tokens=new_usage.cache_creation_input_tokens,
+                prompt_text_tokens=new_usage.prompt_text_tokens,
+                prompt_audio_tokens=new_usage.prompt_audio_tokens,
+                completion_text_tokens=new_usage.completion_text_tokens,
+                completion_audio_tokens=new_usage.completion_audio_tokens,
             )
 
         logger.debug(f"LLM usage metrics: {self._llm_usage_metrics}")
@@ -167,6 +190,12 @@ class PipelineMetricsAggregator(FrameProcessor):
                 "total_tokens": usage.total_tokens,
                 "cache_read_input_tokens": usage.cache_read_input_tokens,
                 "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+                # Per-modality split for speech-to-speech billing (None when the
+                # model didn't report it — i.e. an ordinary text LLM).
+                "prompt_text_tokens": usage.prompt_text_tokens,
+                "prompt_audio_tokens": usage.prompt_audio_tokens,
+                "completion_text_tokens": usage.completion_text_tokens,
+                "completion_audio_tokens": usage.completion_audio_tokens,
             }
 
         return {

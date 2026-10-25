@@ -416,6 +416,71 @@ async def _authorize_oss_wallet_balance(
     return QuotaCheckResult(has_quota=True)
 
 
+async def _authorize_model_status(user_config: Any) -> QuotaCheckResult:
+    """Refuse a run whose selected chat model is deprecated or disabled.
+
+    Checks the chat (llm) model the run will use against model_pricing:
+      - provider disabled                 -> refuse
+      - model deprecated                  -> refuse
+      - model present but is_enabled=false -> refuse
+    A model with NO pricing row is allowed (pricing may not be synced yet) so
+    this never blocks a fresh install before the first sync. Any unexpected
+    error allows the run (fail-open here: pricing status is not money-critical
+    the way the balance check is).
+    """
+    from api.enums import ModelPricingKind, ModelPricingStatus
+
+    llm = getattr(user_config, "llm", None)
+    provider = getattr(llm, "provider", None)
+    model = getattr(llm, "model", None)
+    provider_val = provider.value if hasattr(provider, "value") else provider
+    if not provider_val or not model:
+        return QuotaCheckResult(has_quota=True)
+
+    try:
+        # Provider-level disable hides all its models.
+        settings = await db_client.get_provider_settings(provider_val)
+        if settings is not None and not settings.is_enabled:
+            return QuotaCheckResult(
+                has_quota=False,
+                error_code="model_unavailable",
+                error_message=(
+                    f"The provider '{provider_val}' is currently disabled. "
+                    "Please choose another model in Models settings."
+                ),
+            )
+
+        row = await db_client.get_active_price_by_model(
+            model, kind=ModelPricingKind.CHAT
+        )
+        if row is None:
+            # Not yet priced — don't block.
+            return QuotaCheckResult(has_quota=True)
+        if row.status == ModelPricingStatus.DEPRECATED.value:
+            return QuotaCheckResult(
+                has_quota=False,
+                error_code="model_deprecated",
+                error_message=(
+                    f"The model '{model}' is deprecated and can no longer start "
+                    "new sessions. Please choose another model in Models settings."
+                ),
+            )
+        if not row.is_enabled:
+            return QuotaCheckResult(
+                has_quota=False,
+                error_code="model_unavailable",
+                error_message=(
+                    f"The model '{model}' is not enabled. Please choose another "
+                    "model in Models settings."
+                ),
+            )
+    except Exception as e:
+        logger.warning("Model status check failed (allowing run): {}", e)
+        return QuotaCheckResult(has_quota=True)
+
+    return QuotaCheckResult(has_quota=True)
+
+
 async def authorize_workflow_run_start(
     *,
     workflow_id: int,
@@ -483,6 +548,14 @@ async def authorize_workflow_run_start(
             wallet = await _authorize_oss_wallet_balance(workflow.organization_id)
             if not wallet.has_quota:
                 return wallet
+
+        # Block runs on a deprecated or disabled model (OSS). A model that the
+        # admin disabled, or that the catalog marked deprecated, must not start a
+        # new session — same fail-closed stance as the balance block.
+        if DEPLOYMENT_MODE == "oss":
+            model_block = await _authorize_model_status(user_config)
+            if not model_block.has_quota:
+                return model_block
 
         dograh_api_keys = _dograh_api_keys(user_config)
         if not dograh_api_keys:

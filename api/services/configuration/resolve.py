@@ -5,10 +5,44 @@ from __future__ import annotations
 import copy
 
 from api.schemas.ai_model_configuration import EffectiveAIModelConfiguration
+from api.services.configuration.provider_keys import get_provider_api_key
 from api.services.configuration.registry import (
     REGISTRY,
     ServiceType,
 )
+
+# Sections of the effective config whose api_key must be sourced from env.
+_ENV_KEY_SECTIONS = ("llm", "tts", "stt", "realtime", "embeddings")
+
+
+def _inject_env_api_keys(
+    config: EffectiveAIModelConfiguration,
+) -> EffectiveAIModelConfiguration:
+    """Overwrite each service's api_key with the env-sourced provider key.
+
+    Section 1: keys never come from the stored configuration anymore. For every
+    present section we look up the provider's env key and stamp it onto the
+    section's api_key, ignoring whatever was saved. Dograh (managed) sections
+    keep their own key — they are not in PROVIDER_ENV_KEYS, so get_provider_api_key
+    returns None and we leave the section untouched.
+    """
+    for section_key in _ENV_KEY_SECTIONS:
+        section = getattr(config, section_key, None)
+        if section is None:
+            continue
+        provider = getattr(section, "provider", None)
+        env_key = get_provider_api_key(provider)
+        if env_key is None:
+            # No env mapping for this provider (e.g. dograh managed) — leave as-is.
+            continue
+        if hasattr(section, "api_key"):
+            try:
+                setattr(section, "api_key", env_key)
+            except Exception:
+                # Some provider configs expose api_key as read-only / computed;
+                # skip rather than break resolution.
+                pass
+    return config
 
 # Maps override key → (EffectiveAIModelConfiguration field, ServiceType for registry lookup)
 _SECTION_MAP: dict[str, ServiceType] = {
@@ -89,7 +123,7 @@ def resolve_effective_config(
     - The original user_config is never mutated.
     """
     if not model_overrides:
-        return user_config.model_copy(deep=True)
+        return _inject_env_api_keys(user_config.model_copy(deep=True))
 
     effective = user_config.model_copy(deep=True)
 
@@ -124,4 +158,4 @@ def resolve_effective_config(
             merged = base.model_copy(update=override)
             setattr(effective, section_key, merged)
 
-    return effective
+    return _inject_env_api_keys(effective)
