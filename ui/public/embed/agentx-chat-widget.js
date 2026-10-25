@@ -50,7 +50,7 @@
   const token = scriptUrl.searchParams.get('token') || scriptTag.getAttribute('data-token') || '';
   let apiEndpoint = scriptUrl.searchParams.get('apiEndpoint') || scriptTag.getAttribute('data-api-endpoint') || '';
 
-  if (!apiEndpoint) {
+  if (!apiEndpoint || apiEndpoint.includes('host.docker.internal')) {
     apiEndpoint = window.location.origin.includes('localhost')
       ? 'http://localhost:3000'
       : window.location.origin;
@@ -66,10 +66,10 @@
     isLoading: false,
     messages: [],
     config: {
-      title: scriptUrl.searchParams.get('title') || scriptTag.getAttribute('data-title') || 'AI Assistant',
-      subtitle: scriptUrl.searchParams.get('subtitle') || scriptTag.getAttribute('data-subtitle') || 'Online • Ready to assist',
+      title: scriptUrl.searchParams.get('title') || scriptTag.getAttribute('data-title') || 'Chat Agent',
+      subtitle: scriptUrl.searchParams.get('subtitle') || scriptTag.getAttribute('data-subtitle') || 'Chat Agent • Online',
       buttonColor: scriptUrl.searchParams.get('buttonColor') || scriptTag.getAttribute('data-button-color') || '#2563eb',
-      buttonText: scriptUrl.searchParams.get('buttonText') || scriptTag.getAttribute('data-button-text') || 'Chat with us',
+      buttonText: scriptUrl.searchParams.get('buttonText') || scriptTag.getAttribute('data-button-text') || 'Chat with Agent',
       position: scriptUrl.searchParams.get('position') || scriptTag.getAttribute('data-position') || 'bottom-right',
     },
   };
@@ -92,6 +92,9 @@
         state.messages = [];
         state.isOpen = false;
       }
+      try {
+        sessionStorage.removeItem(STORAGE_KEYS.POPUP_POS);
+      } catch (e) {}
     } catch (e) {
       state.sessionKey = generateSessionKey();
       state.messages = [];
@@ -179,121 +182,83 @@
         bottom: 84px;
       }
 
-      /* Floating Trigger Button */
+      /* Floating Trigger Pill Button (Matches Configuration tab preview & Talk to Agent style) */
       .agentx-chat-trigger {
         position: relative;
-        width: 62px;
-        height: 62px;
-        border-radius: 50%;
-        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 60%, #4338ca 100%);
-        box-shadow: 0 10px 25px -4px rgba(37, 99, 235, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.25) inset, 0 2px 4px rgba(0, 0, 0, 0.1);
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 9999px;
+        padding: 12px 20px;
+        background: #2563eb;
+        color: #ffffff;
+        font-family: inherit;
+        font-size: 14px;
+        font-weight: 600;
+        line-height: 1;
+        white-space: nowrap;
+        box-shadow: 0 10px 25px -4px rgba(37, 99, 235, 0.45), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
         border: none;
         cursor: grab;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: #ffffff;
-        transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease;
+        transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease, background 0.2s ease;
         user-select: none;
         -webkit-user-select: none;
         -webkit-user-drag: none;
         touch-action: none;
       }
       .agentx-chat-trigger:hover {
-        transform: scale(1.08) translateY(-2px);
-        box-shadow: 0 16px 36px -4px rgba(37, 99, 235, 0.65), 0 0 0 1.5px rgba(255, 255, 255, 0.4) inset;
+        transform: translateY(-2px) scale(1.02);
+        box-shadow: 0 14px 28px -4px rgba(37, 99, 235, 0.55), 0 6px 12px -2px rgba(0, 0, 0, 0.1);
       }
       .agentx-chat-trigger:active,
       #agentx-chat-widget-root.is-dragging .agentx-chat-trigger {
         cursor: grabbing !important;
-        transform: scale(0.95);
+        transform: scale(0.98);
       }
 
       /* Online Status Badge on Trigger */
       .agentx-trigger-badge {
         position: absolute;
-        top: 2px;
-        right: 2px;
-        width: 14px;
-        height: 14px;
+        top: -1px;
+        right: -1px;
+        width: 11px;
+        height: 11px;
         border-radius: 50%;
         background: #10b981;
-        border: 2.5px solid #ffffff;
+        border: 2px solid #ffffff;
         box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
         animation: agentx-badge-pulse 2.2s infinite;
         pointer-events: none;
       }
       @keyframes agentx-badge-pulse {
         0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-        70% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+        70% { box-shadow: 0 0 0 7px rgba(16, 185, 129, 0); }
         100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
       }
 
-      /* Icon Toggle Animation */
-      .agentx-icon-chat,
-      .agentx-icon-close {
-        position: absolute;
-        transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s ease;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        pointer-events: none;
+      .agentx-pill-icon {
+        width: 16px;
+        height: 16px;
+        stroke: currentColor;
+        stroke-width: 2;
+        fill: none;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        flex-shrink: 0;
       }
-      .agentx-chat-trigger.is-open .agentx-icon-chat {
-        transform: rotate(90deg) scale(0);
-        opacity: 0;
-      }
-      .agentx-chat-trigger:not(.is-open) .agentx-icon-close {
-        transform: rotate(-90deg) scale(0);
-        opacity: 0;
-      }
-      .agentx-chat-trigger.is-open .agentx-icon-close {
-        transform: rotate(0) scale(1);
-        opacity: 1;
-      }
-
-      /* Interactive Teaser Pill */
-      .agentx-teaser {
-        position: absolute;
-        right: 76px;
-        top: 50%;
-        transform: translateY(-50%);
-        background: #ffffff;
-        color: #0f172a;
-        padding: 9px 15px;
-        border-radius: 24px;
-        font-size: 13px;
+      .agentx-pill-text {
+        font-size: 14px;
         font-weight: 600;
+        color: #ffffff;
         letter-spacing: -0.01em;
-        white-space: nowrap;
-        box-shadow: 0 10px 28px -4px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.06);
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        cursor: pointer;
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity 0.3s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-        z-index: -1;
-      }
-      .agentx-teaser.is-visible {
-        opacity: 1;
-        pointer-events: auto;
-      }
-      .agentx-teaser:hover {
-        transform: translateY(-50%) scale(1.03);
-        box-shadow: 0 14px 32px -4px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(37, 99, 235, 0.2);
-      }
-      #agentx-chat-widget-root.pos-bottom-left .agentx-teaser {
-        right: auto;
-        left: 76px;
       }
 
-      /* Chat Popup Window */
+      /* Chat Popup Window - Permanently anchored to and follows widget */
       .agentx-chat-popup {
-        position: fixed;
-        bottom: 96px;
-        right: 24px;
+        position: absolute;
+        bottom: calc(100% + 14px);
+        right: 0;
+        left: auto;
         width: 390px;
         max-width: calc(100vw - 32px);
         height: 600px;
@@ -313,10 +278,27 @@
         transition: none !important;
         box-shadow: 0 32px 72px -12px rgba(15, 23, 42, 0.45), 0 0 0 1px rgba(15, 23, 42, 0.12) !important;
       }
-      #agentx-chat-widget-root.pos-bottom-left .agentx-chat-popup {
+      #agentx-chat-widget-root.pos-bottom-left .agentx-chat-popup,
+      #agentx-chat-widget-root.dock-left .agentx-chat-popup {
         right: auto;
-        left: 24px;
+        left: 0;
         transform-origin: bottom left;
+      }
+      #agentx-chat-widget-root.dock-right .agentx-chat-popup {
+        left: auto;
+        right: 0;
+        transform-origin: bottom right;
+      }
+      #agentx-chat-widget-root.dock-top .agentx-chat-popup {
+        bottom: auto;
+        top: calc(100% + 14px);
+        transform-origin: top right;
+      }
+      #agentx-chat-widget-root.dock-top.pos-bottom-left .agentx-chat-popup,
+      #agentx-chat-widget-root.dock-top.dock-left .agentx-chat-popup {
+        right: auto;
+        left: 0;
+        transform-origin: top left;
       }
       .agentx-chat-popup.agentx-hidden {
         opacity: 0;
@@ -687,20 +669,58 @@
   // Linkify helper with Navigation Persistence (opens in same tab without tearing down widget)
   function formatMessageText(text) {
     if (!text) return '';
-    // Escape basic HTML
+
+    // Escape basic HTML to prevent XSS
     let escaped = text
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
 
-    // Linkify markdown links: [label](url)
-    escaped = escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (match, label, url) {
-      return `<a href="${url}" class="agentx-internal-link">${label}</a>`;
+    // 1. Extract markdown links [label](url) and replace with placeholder tokens
+    const mdTokens = [];
+    escaped = escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (match, label, rawUrl) {
+      const idx = mdTokens.length;
+      let url = (rawUrl || '').trim();
+
+      // Normalize portfolio links directly to /portifolio
+      if (url.includes('portifolio') || url.includes('portfolio')) {
+        url = '/portifolio';
+      } else if (/^localhost(\/|:)/i.test(url)) {
+        url = 'http://' + url;
+      }
+
+      mdTokens.push({ label: label, url: url });
+      return `___AGENTX_MD_TOKEN_${idx}___`;
     });
 
-    // Linkify raw URLs
-    escaped = escaped.replace(/(https?:\/\/[^\s<]+)/g, function (url) {
-      return `<a href="${url}" class="agentx-internal-link">${url}</a>`;
+    // 2. Linkify raw URLs (protocol or bare localhost) that are NOT part of markdown links
+    escaped = escaped.replace(/(https?:\/\/[^\s<]+)/g, function (rawUrl) {
+      let url = rawUrl.trim();
+      let label = url;
+      if (url.includes('portifolio') || url.includes('portfolio')) {
+        url = '/portifolio';
+        label = 'Portfolio';
+      }
+      return `<a href="${url}" class="agentx-internal-link" target="_self">${label}</a>`;
+    });
+
+    escaped = escaped.replace(/(?<!["'/])(localhost(?::\d+)?\/[^\s<]+)/g, function (rawUrl) {
+      let url = rawUrl.trim();
+      let label = url;
+      if (url.includes('portifolio') || url.includes('portfolio')) {
+        url = '/portifolio';
+        label = 'Portfolio';
+      } else {
+        url = 'http://' + url;
+      }
+      return `<a href="${url}" class="agentx-internal-link" target="_self">${label}</a>`;
+    });
+
+    // 3. Restore markdown links from tokens
+    escaped = escaped.replace(/___AGENTX_MD_TOKEN_(\d+)___/g, function (match, idxStr) {
+      const token = mdTokens[parseInt(idxStr, 10)];
+      if (!token) return '';
+      return `<a href="${token.url}" class="agentx-internal-link" target="_self">${token.label}</a>`;
     });
 
     return escaped.replace(/\n/g, '<br/>');
@@ -785,6 +805,10 @@
         element.style.setProperty('top', `${newTop}px`, 'important');
         element.style.setProperty('right', 'auto', 'important');
         element.style.setProperty('bottom', 'auto', 'important');
+
+        if (options.onDrag) {
+          options.onDrag();
+        }
       }
     }
 
@@ -842,55 +866,37 @@
   }
 
   /**
-   * Intelligently position chat popup near trigger button unless user
-   * previously dragged popup to their own custom screen location.
+   * Dynamically anchor chat popup to trigger widget.
+   * Keeps popup strictly docked to the trigger button wherever it moves.
    */
   function positionPopupNearTrigger() {
     const root = document.getElementById('agentx-chat-widget-root');
     const popup = document.getElementById('agentx-chat-popup');
     if (!root || !popup) return;
 
-    // Check if user has explicitly dragged popup to custom location
-    try {
-      const savedPopup = sessionStorage.getItem(STORAGE_KEYS.POPUP_POS);
-      if (savedPopup) {
-        const pos = JSON.parse(savedPopup);
-        if (typeof pos.left === 'number' && typeof pos.top === 'number') {
-          const clampedX = Math.max(12, Math.min(pos.left, window.innerWidth - 320));
-          const clampedY = Math.max(12, Math.min(pos.top, window.innerHeight - 300));
-          popup.style.setProperty('left', `${clampedX}px`, 'important');
-          popup.style.setProperty('top', `${clampedY}px`, 'important');
-          popup.style.setProperty('right', 'auto', 'important');
-          popup.style.setProperty('bottom', 'auto', 'important');
-          return;
-        }
-      }
-    } catch (e) {}
+    // Remove any hardcoded inline coordinates so popup strictly follows widget
+    popup.style.removeProperty('left');
+    popup.style.removeProperty('top');
+    popup.style.removeProperty('right');
+    popup.style.removeProperty('bottom');
 
-    // Otherwise position popup adjacent to floating trigger button
-    const triggerRect = root.getBoundingClientRect();
-    const popupWidth = Math.min(380, window.innerWidth - 32);
-    const popupHeight = Math.min(560, window.innerHeight - 120);
-    const margin = 16;
+    const rect = root.getBoundingClientRect();
+    const isLeft = (rect.left + rect.width / 2) < (window.innerWidth / 2) || root.classList.contains('pos-bottom-left');
+    const isTop = rect.top < 380;
 
-    let left;
-    if (triggerRect.left + popupWidth <= window.innerWidth - margin) {
-      left = Math.max(margin, triggerRect.left);
+    if (isLeft) {
+      root.classList.add('dock-left');
+      root.classList.remove('dock-right');
     } else {
-      left = Math.max(margin, triggerRect.right - popupWidth);
+      root.classList.add('dock-right');
+      root.classList.remove('dock-left');
     }
 
-    let top;
-    if (triggerRect.top > window.innerHeight / 2) {
-      top = Math.max(margin, triggerRect.top - popupHeight - 12);
+    if (isTop) {
+      root.classList.add('dock-top');
     } else {
-      top = Math.min(window.innerHeight - popupHeight - margin, triggerRect.bottom + 12);
+      root.classList.remove('dock-top');
     }
-
-    popup.style.setProperty('left', `${left}px`, 'important');
-    popup.style.setProperty('top', `${top}px`, 'important');
-    popup.style.setProperty('right', 'auto', 'important');
-    popup.style.setProperty('bottom', 'auto', 'important');
   }
 
   function mountDOM() {
@@ -904,6 +910,14 @@
     if (state.config.position === 'bottom-left') {
       root.classList.add('pos-bottom-left');
     }
+    const checkVoice = () => {
+      if (document.getElementById('dograh-widget-root') || document.querySelector('.dograh-widget-container') || document.querySelector('script[src*="dograh-widget.js"]')) {
+        root.classList.add('has-dograh-voice');
+      }
+    };
+    checkVoice();
+    setTimeout(checkVoice, 500);
+    setTimeout(checkVoice, 1500);
 
     root.innerHTML = `
       <div class="agentx-chat-popup ${state.isOpen ? '' : 'agentx-hidden'}" id="agentx-chat-popup">
@@ -912,14 +926,9 @@
           <div class="agentx-header-content">
             <div class="agentx-header-info">
               <div class="agentx-avatar-wrap">
-                <div class="agentx-avatar">
+                <div class="agentx-avatar" style="background:${state.config.buttonColor};">
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M12 2a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2 2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/>
-                    <rect x="4" y="8" width="16" height="12" rx="4"/>
-                    <path d="M2 14h2"/>
-                    <path d="M20 14h2"/>
-                    <path d="M15 13v2"/>
-                    <path d="M9 13v2"/>
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                   </svg>
                 </div>
                 <div class="agentx-avatar-dot"></div>
@@ -928,7 +937,7 @@
                 <h4 id="agentx-header-title">${state.config.title}</h4>
                 <p id="agentx-header-sub">
                   <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#10b981;"></span>
-                  <span>${state.config.subtitle}</span>
+                  <span>Chat Agent • Online</span>
                 </p>
               </div>
             </div>
@@ -951,7 +960,7 @@
         <div class="agentx-chat-messages" id="agentx-messages-container"></div>
         <div class="agentx-chat-footer">
           <div class="agentx-input-bar">
-            <input type="text" class="agentx-input" id="agentx-chat-input" placeholder="Ask anything about our AI solutions..." autocomplete="off" />
+            <input type="text" class="agentx-input" id="agentx-chat-input" placeholder="Type a message to Chat Agent..." autocomplete="off" />
             <button class="agentx-send-btn" id="agentx-send-btn" aria-label="Send message">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
                 <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
@@ -967,23 +976,12 @@
         </div>
       </div>
 
-      <div class="agentx-teaser" id="agentx-teaser">
-        <span>💬 ${state.config.buttonText}</span>
-      </div>
-
-      <button class="agentx-chat-trigger ${state.isOpen ? 'is-open' : ''}" id="agentx-chat-trigger" title="${state.config.buttonText}" aria-label="Open chat" style="background: ${state.config.buttonColor};">
+      <button class="agentx-chat-trigger ${state.isOpen ? 'is-open' : ''}" id="agentx-chat-trigger" title="${state.config.buttonText}" aria-label="${state.config.buttonText}" style="background: ${state.config.buttonColor};">
         <div class="agentx-trigger-badge"></div>
-        <div class="agentx-icon-chat">
-          <svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor">
-            <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"></path>
-          </svg>
-        </div>
-        <div class="agentx-icon-close">
-          <svg viewBox="0 0 24 24" width="26" height="26" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="18" y1="6" x2="6" y2="18"></line>
-            <line x1="6" y1="6" x2="18" y2="18"></line>
-          </svg>
-        </div>
+        <svg class="agentx-pill-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <span class="agentx-pill-text" id="agentx-pill-text">${state.config.buttonText}</span>
       </button>
     `;
 
@@ -1017,9 +1015,7 @@
     bindEvents();
     renderMessages();
 
-    if (state.isOpen) {
-      positionPopupNearTrigger();
-    }
+    positionPopupNearTrigger();
   }
 
   function formatTime(timestamp) {
@@ -1041,30 +1037,16 @@
       const welcome = document.createElement('div');
       welcome.className = 'agentx-welcome-card';
       welcome.innerHTML = `
-        <div style="display:flex;align-items:center;gap:10px;">
-          <div class="agentx-welcome-badge">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"></path>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <div class="agentx-welcome-badge" style="background:${state.config.buttonColor};">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
             </svg>
           </div>
           <div>
-            <h5 class="agentx-welcome-title">Welcome to AgentX Consultancy</h5>
-            <p class="agentx-welcome-desc">How can I assist you with your AI & Automation goals?</p>
+            <h5 class="agentx-welcome-title">${state.config.title || 'Chat Agent'}</h5>
+            <p class="agentx-welcome-desc">Connected to workflow agent. Send a message to start chatting.</p>
           </div>
-        </div>
-        <div class="agentx-chips-wrap">
-          <button class="agentx-chip-btn" data-prompt="What AI consulting and automation services do you offer?">
-            <span>🚀 What services do you offer?</span>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
-          </button>
-          <button class="agentx-chip-btn" data-prompt="How do AI agent workflows improve business efficiency?">
-            <span>⚡ How does AI automation work?</span>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
-          </button>
-          <button class="agentx-chip-btn" data-prompt="I would like to schedule an AI strategy consultation. How can we connect?">
-            <span>📅 Book a consultation</span>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
-          </button>
         </div>
       `;
       container.appendChild(welcome);
@@ -1160,28 +1142,30 @@
     const input = document.getElementById('agentx-chat-input');
     const sendBtn = document.getElementById('agentx-send-btn');
     const container = document.getElementById('agentx-messages-container');
-    const teaser = document.getElementById('agentx-teaser');
-
-    // Make trigger freely draggable across viewport
+    // Make trigger freely draggable across viewport (popup follows widget automatically)
     makeDraggable(root, trigger, {
       margin: 12,
+      onDrag: positionPopupNearTrigger,
       onDragEnd: function (pos) {
         try {
           sessionStorage.setItem(STORAGE_KEYS.TRIGGER_POS, JSON.stringify(pos));
         } catch (e) {}
+        positionPopupNearTrigger();
       }
     });
 
-    // Make popup window freely draggable by its header
+    // Make popup header drag the whole widget container so popup strictly follows trigger
     const popupHeader = popup.querySelector('.agentx-chat-header');
     if (popupHeader) {
-      makeDraggable(popup, popupHeader, {
+      makeDraggable(root, popupHeader, {
         margin: 12,
         ignoreSelector: '#agentx-close-btn, #agentx-close-btn *, #agentx-restart-btn, #agentx-restart-btn *',
+        onDrag: positionPopupNearTrigger,
         onDragEnd: function (pos) {
           try {
-            sessionStorage.setItem(STORAGE_KEYS.POPUP_POS, JSON.stringify(pos));
+            sessionStorage.setItem(STORAGE_KEYS.TRIGGER_POS, JSON.stringify(pos));
           } catch (e) {}
+          positionPopupNearTrigger();
         }
       });
     }
@@ -1191,9 +1175,9 @@
       state.isOpen = !state.isOpen;
       if (state.isOpen) {
         trigger.classList.add('is-open');
-        if (teaser) teaser.classList.remove('is-visible');
         positionPopupNearTrigger();
         popup.classList.remove('agentx-hidden');
+        renderMessages();
         input.focus();
       } else {
         trigger.classList.remove('is-open');
@@ -1202,30 +1186,12 @@
       persistSessionState();
     });
 
-    // Teaser pill interaction
-    if (teaser && !state.isOpen) {
-      setTimeout(function () {
-        if (!state.isOpen && teaser) {
-          teaser.classList.add('is-visible');
-        }
-      }, 1600);
-      teaser.addEventListener('click', function () {
-        teaser.classList.remove('is-visible');
-        if (!state.isOpen) {
-          trigger.click();
-        }
-      });
-    }
-
-    // Close button: triggers backend teardown & state hygiene (Priority 3 & 4)
+    // Close button: closes the popup window; messages persist in the tab until the tab is closed
     closeBtn.addEventListener('click', function (e) {
       e.stopPropagation();
       state.isOpen = false;
       trigger.classList.remove('is-open');
       popup.classList.add('agentx-hidden');
-      // Terminate backend session & clear local state
-      terminateAndResetSession();
-      renderMessages();
       persistSessionState();
     });
 
@@ -1267,15 +1233,68 @@
         }
       }
 
-      // Internal links
+      // Internal links & same-tab navigation
       const link = e.target.closest('a');
-      if (link && link.href) {
-        const linkUrl = new URL(link.href, window.location.href);
-        if (linkUrl.origin === window.location.origin) {
-          e.preventDefault();
-          state.isOpen = true;
-          persistSessionState();
-          window.location.href = link.href;
+      if (link) {
+        let rawHref = (link.getAttribute('href') || '').trim();
+        let parseHref = rawHref;
+        if (/^localhost(\/|:)/i.test(parseHref)) {
+          parseHref = 'http://' + parseHref;
+        }
+
+        try {
+          const parsed = new URL(parseHref, window.location.href);
+          const isSameHost =
+            parsed.hostname === window.location.hostname ||
+            parsed.hostname === 'localhost' ||
+            parsed.hostname === '127.0.0.1';
+
+          if (isSameHost) {
+            e.preventDefault();
+            // Preserve the widget open state across the navigation
+            state.isOpen = true;
+            persistSessionState();
+
+            // Extract target path cleanly without stray 'localhost' segment
+            let targetPath = parsed.pathname;
+            if (targetPath.startsWith('/localhost/')) {
+              targetPath = targetPath.replace(/^\/localhost/, '');
+            } else if (targetPath === '/localhost') {
+              targetPath = '/';
+            }
+            if (parsed.search) targetPath += parsed.search;
+            if (parsed.hash) targetPath += parsed.hash;
+
+            // Normalize portfolio routes directly
+            if (targetPath.includes('portifolio') || targetPath.includes('portfolio')) {
+              targetPath = '/portifolio';
+            }
+
+            // Seamless client-side router transition in the same tab
+            try {
+              window.history.pushState({}, '', targetPath);
+              window.dispatchEvent(new PopStateEvent('popstate'));
+              window.dispatchEvent(new Event('locationchange'));
+            } catch (navErr) {
+              window.location.href = targetPath;
+            }
+            return;
+          }
+        } catch (err) {
+          if (rawHref.includes('portifolio') || rawHref.includes('portfolio') || rawHref.startsWith('/') || rawHref.startsWith('./')) {
+            e.preventDefault();
+            state.isOpen = true;
+            persistSessionState();
+            const cleanPath = '/portifolio';
+            try {
+              window.history.pushState({}, '', cleanPath);
+              window.dispatchEvent(new PopStateEvent('popstate'));
+              window.dispatchEvent(new Event('locationchange'));
+            } catch (navErr) {
+              window.location.href = cleanPath;
+            }
+            return;
+          }
         }
       }
     });
@@ -1314,11 +1333,13 @@
               }
             }
 
-            const title = (cfg.settings && cfg.settings.chatTitle) || state.config.title;
+            const title = (cfg.settings && cfg.settings.chatTitle) || cfg.chat_title || cfg.workflow_name || state.config.title;
             if (title) {
               state.config.title = title;
               const titleEl = document.getElementById('agentx-header-title');
               if (titleEl) titleEl.textContent = title;
+              const welcomeTitle = document.querySelector('.agentx-welcome-title');
+              if (welcomeTitle) welcomeTitle.textContent = title;
             }
 
             const subtitle = (cfg.settings && cfg.settings.chatSubtitle) || state.config.subtitle;
@@ -1333,13 +1354,22 @@
               state.config.buttonColor = btnColor;
               const trigger = document.getElementById('agentx-chat-trigger');
               if (trigger) trigger.style.background = btnColor;
+              const avatar = document.querySelector('.agentx-avatar');
+              if (avatar) avatar.style.background = btnColor;
+              const welcomeBadge = document.querySelector('.agentx-welcome-badge');
+              if (welcomeBadge) welcomeBadge.style.background = btnColor;
             }
 
-            const btnText = (cfg.settings && cfg.settings.chatButtonText) || cfg.chat_button_text || 'Chat with us';
+            const btnText = (cfg.settings && cfg.settings.chatButtonText) || cfg.chat_button_text || 'Chat with Agent';
             if (btnText) {
               state.config.buttonText = btnText;
               const trigger = document.getElementById('agentx-chat-trigger');
-              if (trigger) trigger.setAttribute('title', btnText);
+              if (trigger) {
+                trigger.setAttribute('title', btnText);
+                trigger.setAttribute('aria-label', btnText);
+              }
+              const pillTextEl = document.getElementById('agentx-pill-text');
+              if (pillTextEl) pillTextEl.textContent = btnText;
             }
           }
         })

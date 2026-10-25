@@ -84,10 +84,10 @@ export function EmbedDialog({
 
     // Form state (Chat Widget)
     const [chatEmbedMode, setChatEmbedMode] = useState<"floating" | "inline">("floating");
-    const [chatTitle, setChatTitle] = useState(workflowName || "AI Assistant");
+    const [chatTitle, setChatTitle] = useState(workflowName || "Chat Agent");
     const [chatButtonColor, setChatButtonColor] = useState("#2563eb");
     const [chatPosition, setChatPosition] = useState("bottom-right");
-    const [chatButtonText, setChatButtonText] = useState("Chat with us");
+    const [chatButtonText, setChatButtonText] = useState("Chat with Agent");
 
     // Active code snippet tab (mirrors widgetType by default)
     const [activeScriptType, setActiveScriptType] = useState<"voice" | "chat">("voice");
@@ -586,7 +586,7 @@ export function EmbedDialog({
                                                         id="chat-button-text"
                                                         value={chatButtonText}
                                                         onChange={(e) => setChatButtonText(e.target.value)}
-                                                        placeholder="Chat with us"
+                                                        placeholder="Chat with Agent"
                                                         maxLength={40}
                                                     />
                                                 </div>
@@ -634,7 +634,7 @@ export function EmbedDialog({
                                                         id="chat-title"
                                                         value={chatTitle}
                                                         onChange={(e) => setChatTitle(e.target.value)}
-                                                        placeholder="AI Assistant"
+                                                        placeholder="Chat Agent"
                                                         maxLength={40}
                                                     />
                                                 </div>
@@ -648,7 +648,7 @@ export function EmbedDialog({
                                                     style={{ backgroundColor: chatButtonColor }}
                                                 >
                                                     <MessageSquare className="h-4 w-4" />
-                                                    {chatButtonText || "Chat with us"}
+                                                    {chatButtonText || "Chat with Agent"}
                                                 </button>
                                             </div>
                                         </div>

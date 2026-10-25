@@ -53,6 +53,7 @@ class EmbedConfigResponse(BaseModel):
     """Response model for embed configuration"""
 
     workflow_id: int
+    workflow_name: Optional[str] = None
     settings: dict
     theme: str
     position: str
@@ -63,6 +64,7 @@ class EmbedConfigResponse(BaseModel):
     chat_position: Optional[str] = None
     chat_button_text: Optional[str] = None
     chat_button_color: Optional[str] = None
+    chat_title: Optional[str] = None
 
 
 class EmbedChatMessageRequest(BaseModel):
@@ -362,6 +364,7 @@ async def initialize_embed_session(
                 **(init_request.context_variables or {}),
                 "provider": WorkflowRunMode.SMALLWEBRTC.value,
             },
+            organization_id=embed_token.organization_id,
         )
     except Exception as e:
         logger.error(f"Failed to create workflow run: {e}")
@@ -439,20 +442,34 @@ async def get_embed_config(token: str, request: Request, response: Response):
         _allow_embed_origin(response, origin)
 
     # Extract settings with defaults
-    settings = embed_token.settings or {}
+    settings = dict(embed_token.settings or {})
 
     # Voice widget settings (consumed by dograh-widget.js)
     voice_position = settings.get("voicePosition") or settings.get("position", "bottom-right")
     voice_button_text = settings.get("voiceButtonText") or settings.get("buttonText", "Talk to Agent")
     voice_button_color = settings.get("voiceButtonColor") or settings.get("buttonColor", "#10b981")
 
+    workflow = await db_client.get_workflow(
+        embed_token.workflow_id, organization_id=embed_token.organization_id
+    )
+    workflow_name = workflow.name if workflow else None
+
     # Chat widget settings (consumed by agentx-chat-widget.js)
     chat_position = settings.get("chatPosition", "bottom-right")
-    chat_button_text = settings.get("chatButtonText", "Chat with us")
+    raw_chat_button_text = settings.get("chatButtonText")
+    chat_button_text = (
+        "Chat with Agent"
+        if not raw_chat_button_text or raw_chat_button_text.strip().lower() in ("chat with us", "chat with agent")
+        else raw_chat_button_text
+    )
+    settings["chatButtonText"] = chat_button_text
     chat_button_color = settings.get("chatButtonColor", "#2563eb")
+    chat_title = settings.get("chatTitle") or workflow_name or "Chat Agent"
+    settings["chatTitle"] = chat_title
 
     return EmbedConfigResponse(
         workflow_id=embed_token.workflow_id,
+        workflow_name=workflow_name,
         settings=settings,
         theme=settings.get("theme", "light"),
         position=voice_position,
@@ -463,6 +480,7 @@ async def get_embed_config(token: str, request: Request, response: Response):
         chat_position=chat_position,
         chat_button_text=chat_button_text,
         chat_button_color=chat_button_color,
+        chat_title=chat_title,
     )
 
 
@@ -589,8 +607,8 @@ async def send_embed_chat_message(
         _handle_message,
     )
 
-    has_released_def = bool(workflow.released_definition_id)
-    use_draft = not has_released_def
+    has_draft = bool(await db_client.get_workflow_draft(workflow.id))
+    use_draft = has_draft or not bool(workflow.released_definition_id)
 
     res = await _handle_message(
         workflow=workflow,

@@ -69,14 +69,21 @@
 
     // Determine API base URL
     let apiBaseUrl = DEFAULT_CONFIG.apiBaseUrl;
-    if (apiEndpoint) {
+    let resolvedEndpoint = apiEndpoint;
+    if (!resolvedEndpoint || resolvedEndpoint.includes('host.docker.internal')) {
+      resolvedEndpoint = (window.location && window.location.origin && window.location.origin.includes('localhost'))
+        ? 'http://localhost:3000'
+        : (resolvedEndpoint && !resolvedEndpoint.includes('host.docker.internal') ? resolvedEndpoint : (window.location ? window.location.origin : 'http://localhost:3000'));
+    }
+
+    if (resolvedEndpoint) {
       // Use the apiEndpoint from URL parameter if provided
       // Ensure it has a protocol
-      if (!apiEndpoint.startsWith('http://') && !apiEndpoint.startsWith('https://')) {
+      if (!resolvedEndpoint.startsWith('http://') && !resolvedEndpoint.startsWith('https://')) {
         // Default to https for production endpoints
-        apiBaseUrl = 'https://' + apiEndpoint.replace(/\/+$/, '');
+        apiBaseUrl = 'https://' + resolvedEndpoint.replace(/\/+$/, '');
       } else {
-        apiBaseUrl = apiEndpoint.replace(/\/+$/, ''); // Remove trailing slashes
+        apiBaseUrl = resolvedEndpoint.replace(/\/+$/, ''); // Remove trailing slashes
       }
     } else if (scriptUrl.origin.includes('localhost')) {
       apiBaseUrl = 'http://localhost:8000';
@@ -268,6 +275,10 @@
     state.audioElement = audio;
 
     document.body.appendChild(container);
+    const chatWidget = document.getElementById('agentx-chat-widget-root');
+    if (chatWidget) {
+      chatWidget.classList.add('has-dograh-voice');
+    }
     renderFloating();
   }
 

@@ -57,20 +57,32 @@ services:
       - app-network
 
   minio:
-    image: minio/minio
+    # MinIO removed minio/minio from Docker Hub AND quay.io (Sep 2026) — both now
+    # return 401 for anonymous pulls, with no free tag available. Bitnami then moved
+    # its free images to the archived "bitnamilegacy" namespace (Aug 2026). The
+    # legacy image is no longer updated but is still freely pullable and works as a
+    # drop-in, S3/MinIO-compatible store for local dev. It honors the same
+    # MINIO_ROOT_USER / MINIO_ROOT_PASSWORD, serves the S3 API on :9000 and the
+    # console on :9001, and persists data under /bitnami/minio/data.
+    image: bitnamilegacy/minio:latest
     container_name: minio
-    command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: "${MINIO_ROOT_USER:-minioadmin}"
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-minioadmin}"
       MINIO_API_CORS_ALLOW_ORIGIN: "*"
+      # Create the voice-audio bucket on first start so the api doesn't 404.
+      MINIO_DEFAULT_BUCKETS: "voice-audio"
     ports:
-      - "127.0.0.1:9000:9000" # Bind to localhost explicitly
-      - "127.0.0.1:9001:9001"
+      - "127.0.0.1:9000:9000" # S3 API — bind to localhost explicitly
+      - "127.0.0.1:9001:9001" # Console
     volumes:
-      - minio-data:/data
+      - minio-data:/bitnami/minio/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test:
+        [
+          "CMD-SHELL",
+          "curl -f http://localhost:9000/minio/health/live || exit 1",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
