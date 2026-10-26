@@ -9,7 +9,6 @@ import {
     MessageSquare,
     Mic,
     Plus,
-    Power,
     Rocket,
     Trash2,
 } from "lucide-react";
@@ -373,176 +372,57 @@ export function EmbedDialog({
                     </div>
                 ) : (
                     <div className="space-y-6">
-                        {/* Separate Widget Status Cards: Talk to Agent vs Chat with Agent */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {/* Voice Agent Toggle Card */}
-                            <div
-                                className={`flex items-center justify-between p-4 rounded-xl border transition-all ${
-                                    voiceEnabled
-                                        ? "bg-emerald-500/10 border-emerald-500/30"
-                                        : "bg-muted/40 border-border"
-                                }`}
-                            >
-                                <div className="flex items-start gap-3 min-w-0 pr-2">
-                                    <div
-                                        className={`p-2 rounded-lg shrink-0 mt-0.5 ${
-                                            voiceEnabled
-                                                ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400"
-                                                : "bg-muted text-muted-foreground"
-                                        }`}
-                                    >
-                                        <Mic className="h-5 w-5" />
-                                    </div>
-                                    <div className="space-y-1 min-w-0">
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                            <span className="text-sm font-semibold text-foreground">
-                                                Talk to Agent
-                                            </span>
-                                            <span
-                                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium ${
-                                                    voiceEnabled
-                                                        ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
-                                                        : "bg-muted text-muted-foreground border"
-                                                }`}
-                                            >
-                                                <span
-                                                    className={`h-1.5 w-1.5 rounded-full ${
-                                                        voiceEnabled ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground"
-                                                    }`}
-                                                />
-                                                {voiceEnabled ? "Live" : "Disabled"}
-                                            </span>
-                                        </div>
-                                        <p className="text-xs text-muted-foreground leading-snug">
-                                            {voiceEnabled
-                                                ? "Voice button is live & visible on websites."
-                                                : "Voice button is completely hidden on websites."}
-                                        </p>
-                                    </div>
-                                </div>
-                                <div className="flex items-center gap-1.5 pl-2 shrink-0">
-                                    {togglingVoice && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-                                    <Switch
-                                        id="voice-widget-toggle"
-                                        checked={voiceEnabled}
-                                        onCheckedChange={handleToggleVoice}
-                                        disabled={togglingVoice}
-                                        aria-label="Toggle voice widget visibility"
-                                    />
-                                </div>
+                        {/* Allowed Domains */}
+                        <div className="space-y-3">
+                            <Label>
+                                Allowed Domains
+                                <span className="text-xs text-muted-foreground ml-2">
+                                    (leave empty to allow all domains)
+                                </span>
+                            </Label>
+
+                            {/* Domain Input */}
+                            <div className="flex gap-2">
+                                <Input
+                                    placeholder="example.com or *.example.com"
+                                    value={newDomain}
+                                    onChange={(e) => setNewDomain(e.target.value)}
+                                    onKeyPress={handleKeyPress}
+                                />
+                                <Button
+                                    type="button"
+                                    size="icon"
+                                    variant="outline"
+                                    onClick={addDomain}
+                                    disabled={!newDomain.trim()}
+                                >
+                                    <Plus className="h-4 w-4" />
+                                </Button>
                             </div>
 
-                            {/* Chat Agent Toggle Card */}
-                            <div
-                                className={`flex items-center justify-between p-4 rounded-xl border transition-all ${
-                                    chatEnabled
-                                        ? "bg-emerald-500/10 border-emerald-500/30"
-                                        : "bg-muted/40 border-border"
-                                }`}
-                            >
-                                <div className="flex items-start gap-3 min-w-0 pr-2">
-                                    <div
-                                        className={`p-2 rounded-lg shrink-0 mt-0.5 ${
-                                            chatEnabled
-                                                ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400"
-                                                : "bg-muted text-muted-foreground"
-                                        }`}
-                                    >
-                                        <MessageSquare className="h-5 w-5" />
-                                    </div>
-                                    <div className="space-y-1 min-w-0">
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                            <span className="text-sm font-semibold text-foreground">
-                                                Chat with Agent
-                                            </span>
-                                            <span
-                                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium ${
-                                                    chatEnabled
-                                                        ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
-                                                        : "bg-muted text-muted-foreground border"
-                                                }`}
-                                            >
-                                                <span
-                                                    className={`h-1.5 w-1.5 rounded-full ${
-                                                        chatEnabled ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground"
-                                                    }`}
-                                                />
-                                                {chatEnabled ? "Live" : "Disabled"}
-                                            </span>
-                                        </div>
-                                        <p className="text-xs text-muted-foreground leading-snug">
-                                            {chatEnabled
-                                                ? "Chat bubble is live & visible on websites."
-                                                : "Chat bubble is completely hidden on websites."}
-                                        </p>
-                                    </div>
-                                </div>
-                                <div className="flex items-center gap-1.5 pl-2 shrink-0">
-                                    {togglingChat && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-                                    <Switch
-                                        id="chat-widget-toggle"
-                                        checked={chatEnabled}
-                                        onCheckedChange={handleToggleChat}
-                                        disabled={togglingChat}
-                                        aria-label="Toggle chat widget visibility"
-                                    />
-                                </div>
-                            </div>
-                        </div>
-
-                        <Separator />
-
-                                {/* Allowed Domains */}
-                                <div className="space-y-3">
-                                    <Label>
-                                        Allowed Domains
-                                        <span className="text-xs text-muted-foreground ml-2">
-                                            (leave empty to allow all domains)
-                                        </span>
-                                    </Label>
-
-                                    {/* Domain Input */}
-                                    <div className="flex gap-2">
-                                        <Input
-                                            placeholder="example.com or *.example.com"
-                                            value={newDomain}
-                                            onChange={(e) => setNewDomain(e.target.value)}
-                                            onKeyPress={handleKeyPress}
-                                        />
-                                        <Button
-                                            type="button"
-                                            size="icon"
-                                            variant="outline"
-                                            onClick={addDomain}
-                                            disabled={!newDomain.trim()}
+                            {/* Domain List */}
+                            {domains.length > 0 && (
+                                <div className="space-y-2">
+                                    {domains.map((domain, index) => (
+                                        <div
+                                            key={index}
+                                            className="flex items-center justify-between bg-muted/50 rounded-lg px-3 py-2"
                                         >
-                                            <Plus className="h-4 w-4" />
-                                        </Button>
-                                    </div>
-
-                                    {/* Domain List */}
-                                    {domains.length > 0 && (
-                                        <div className="space-y-2">
-                                            {domains.map((domain, index) => (
-                                                <div
-                                                    key={index}
-                                                    className="flex items-center justify-between bg-muted/50 rounded-lg px-3 py-2"
-                                                >
-                                                    <span className="text-sm font-mono">{domain}</span>
-                                                    <Button
-                                                        type="button"
-                                                        size="icon"
-                                                        variant="ghost"
-                                                        className="h-6 w-6"
-                                                        onClick={() => removeDomain(domain)}
-                                                    >
-                                                        <Trash2 className="h-3 w-3" />
-                                                    </Button>
-                                                </div>
-                                            ))}
+                                            <span className="text-sm font-mono">{domain}</span>
+                                            <Button
+                                                type="button"
+                                                size="icon"
+                                                variant="ghost"
+                                                className="h-6 w-6"
+                                                onClick={() => removeDomain(domain)}
+                                            >
+                                                <Trash2 className="h-3 w-3" />
+                                            </Button>
                                         </div>
-                                    )}
+                                    ))}
                                 </div>
+                            )}
+                        </div>
 
                                 <Separator />
 
