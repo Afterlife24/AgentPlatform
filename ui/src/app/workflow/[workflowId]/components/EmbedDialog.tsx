@@ -55,6 +55,8 @@ interface EmbedToken {
     allowed_domains: string[] | null;
     settings: Record<string, unknown> | null;
     is_active: boolean;
+    voice_enabled?: boolean | null;
+    chat_enabled?: boolean | null;
     usage_count: number;
     usage_limit: number | null;
     expires_at: string | null;
@@ -71,15 +73,18 @@ export function EmbedDialog({
 }: EmbedDialogProps) {
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
-    const [toggling, setToggling] = useState(false);
+    const [togglingVoice, setTogglingVoice] = useState(false);
+    const [togglingChat, setTogglingChat] = useState(false);
     const [embedToken, setEmbedToken] = useState<EmbedToken | null>(null);
     const [copied, setCopied] = useState(false);
 
     // Widget Type: "voice" (Talk to Agent) vs "chat" (Chat Widget)
     const [widgetType, setWidgetType] = useState<"voice" | "chat">("voice");
 
-    // Form state (Shared & Voice)
-    const [isEnabled, setIsEnabled] = useState(false);
+    // Separate widget visibility toggles
+    const [voiceEnabled, setVoiceEnabled] = useState(true);
+    const [chatEnabled, setChatEnabled] = useState(true);
+    const [isEnabled, setIsEnabled] = useState(true);
     const [domains, setDomains] = useState<string[]>([]);
     const [newDomain, setNewDomain] = useState("");
     const [embedMode, setEmbedMode] = useState<"floating" | "inline" | "headless">("floating");
@@ -110,9 +115,26 @@ export function EmbedDialog({
                 setEmbedToken(data);
                 setIsEnabled(data.is_active);
 
+                const settings = (data.settings || {}) as Record<string, any>;
+                const vOn =
+                    data.voice_enabled !== undefined && data.voice_enabled !== null
+                        ? Boolean(data.voice_enabled)
+                        : settings.voiceEnabled !== undefined
+                        ? Boolean(settings.voiceEnabled)
+                        : data.is_active;
+
+                const cOn =
+                    data.chat_enabled !== undefined && data.chat_enabled !== null
+                        ? Boolean(data.chat_enabled)
+                        : settings.chatEnabled !== undefined
+                        ? Boolean(settings.chatEnabled)
+                        : data.is_active;
+
+                setVoiceEnabled(vOn);
+                setChatEnabled(cOn);
+
                 // Load settings
                 if (data.settings) {
-                    const settings = data.settings as Record<string, string>;
                     if (settings.widgetType === "voice" || settings.widgetType === "chat") {
                         setWidgetType(settings.widgetType);
                         setActiveScriptType(settings.widgetType);
@@ -151,32 +173,69 @@ export function EmbedDialog({
         }
     }, [open, loadEmbedToken]);
 
-    const handleToggleActive = async (newActiveState: boolean) => {
-        setIsEnabled(newActiveState);
+    const handleToggleVoice = async (newState: boolean) => {
+        setVoiceEnabled(newState);
         if (!embedToken) {
             return;
         }
 
-        setToggling(true);
+        setTogglingVoice(true);
         try {
             const res = await client.patch({
                 url: "/api/v1/workflow/{workflow_id}/embed-token/toggle",
                 path: { workflow_id: workflowId },
-                body: { is_active: newActiveState },
+                body: { widget_type: "voice", enabled: newState },
             });
 
             if (res.data) {
                 const updated = res.data as EmbedToken;
                 setEmbedToken(updated);
+                if (updated.voice_enabled !== undefined && updated.voice_enabled !== null) {
+                    setVoiceEnabled(Boolean(updated.voice_enabled));
+                }
+                if (updated.chat_enabled !== undefined && updated.chat_enabled !== null) {
+                    setChatEnabled(Boolean(updated.chat_enabled));
+                }
                 setIsEnabled(updated.is_active);
-            } else {
-                setEmbedToken((prev) => (prev ? { ...prev, is_active: newActiveState } : null));
             }
         } catch (error) {
-            console.error("Failed to toggle embed token status:", error);
-            setIsEnabled(!newActiveState);
+            console.error("Failed to toggle voice widget status:", error);
+            setVoiceEnabled(!newState);
         } finally {
-            setToggling(false);
+            setTogglingVoice(false);
+        }
+    };
+
+    const handleToggleChat = async (newState: boolean) => {
+        setChatEnabled(newState);
+        if (!embedToken) {
+            return;
+        }
+
+        setTogglingChat(true);
+        try {
+            const res = await client.patch({
+                url: "/api/v1/workflow/{workflow_id}/embed-token/toggle",
+                path: { workflow_id: workflowId },
+                body: { widget_type: "chat", enabled: newState },
+            });
+
+            if (res.data) {
+                const updated = res.data as EmbedToken;
+                setEmbedToken(updated);
+                if (updated.voice_enabled !== undefined && updated.voice_enabled !== null) {
+                    setVoiceEnabled(Boolean(updated.voice_enabled));
+                }
+                if (updated.chat_enabled !== undefined && updated.chat_enabled !== null) {
+                    setChatEnabled(Boolean(updated.chat_enabled));
+                }
+                setIsEnabled(updated.is_active);
+            }
+        } catch (error) {
+            console.error("Failed to toggle chat widget status:", error);
+            setChatEnabled(!newState);
+        } finally {
+            setTogglingChat(false);
         }
     };
 
@@ -189,6 +248,8 @@ export function EmbedDialog({
                     allowed_domains: domains.length > 0 ? domains : null,
                     settings: {
                         widgetType,
+                        voiceEnabled,
+                        chatEnabled,
                         embedMode,
                         position,
                         buttonText,
@@ -203,7 +264,9 @@ export function EmbedDialog({
                         chatPosition,
                         chatButtonText,
                     },
-                    is_active: isEnabled,
+                    is_active: voiceEnabled || chatEnabled,
+                    voice_enabled: voiceEnabled,
+                    chat_enabled: chatEnabled,
                     usage_limit: null,
                     expires_in_days: null,
                 },
@@ -212,6 +275,12 @@ export function EmbedDialog({
             if (response.data) {
                 const data = response.data as EmbedToken;
                 setEmbedToken(data);
+                if (data.voice_enabled !== undefined && data.voice_enabled !== null) {
+                    setVoiceEnabled(Boolean(data.voice_enabled));
+                }
+                if (data.chat_enabled !== undefined && data.chat_enabled !== null) {
+                    setChatEnabled(Boolean(data.chat_enabled));
+                }
                 setIsEnabled(data.is_active);
             }
         } catch (error) {
@@ -270,6 +339,10 @@ export function EmbedDialog({
             ? embedToken?.chat_embed_script || liveChatScript
             : embedToken?.embed_script || "";
 
+    const isCurrentSnippetActive = activeScriptType === "chat" ? chatEnabled : voiceEnabled;
+    const isCurrentSnippetToggling = activeScriptType === "chat" ? togglingChat : togglingVoice;
+    const handleCurrentSnippetToggle = activeScriptType === "chat" ? handleToggleChat : handleToggleVoice;
+
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className="sm:max-w-3xl w-full max-h-[90vh] overflow-y-auto">
@@ -300,62 +373,120 @@ export function EmbedDialog({
                     </div>
                 ) : (
                     <div className="space-y-6">
-                        {/* Master Widget Status & Toggle */}
-                        <div
-                            className={`flex items-center justify-between p-4 rounded-xl border transition-all ${
-                                isEnabled
-                                    ? "bg-emerald-500/10 border-emerald-500/30"
-                                    : "bg-muted/40 border-border"
-                            }`}
-                        >
-                            <div className="flex items-center gap-3">
-                                <div
-                                    className={`p-2.5 rounded-full ${
-                                        isEnabled
-                                            ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400"
-                                            : "bg-muted text-muted-foreground"
-                                    }`}
-                                >
-                                    <Power className="h-5 w-5" />
-                                </div>
-                                <div className="space-y-0.5">
-                                    <div className="flex items-center gap-2">
-                                        <span className="text-base font-semibold text-foreground">
-                                            Website Widget Status
-                                        </span>
-                                        <span
-                                            className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${
-                                                isEnabled
-                                                    ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
-                                                    : "bg-muted text-muted-foreground border"
-                                            }`}
-                                        >
-                                            <span
-                                                className={`h-1.5 w-1.5 rounded-full ${
-                                                    isEnabled
-                                                        ? "bg-emerald-500 animate-pulse"
-                                                        : "bg-muted-foreground"
-                                                }`}
-                                            />
-                                            {isEnabled ? "Live & Visible" : "Disabled & Invisible"}
-                                        </span>
+                        {/* Separate Widget Status Cards: Talk to Agent vs Chat with Agent */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {/* Voice Agent Toggle Card */}
+                            <div
+                                className={`flex items-center justify-between p-4 rounded-xl border transition-all ${
+                                    voiceEnabled
+                                        ? "bg-emerald-500/10 border-emerald-500/30"
+                                        : "bg-muted/40 border-border"
+                                }`}
+                            >
+                                <div className="flex items-start gap-3 min-w-0 pr-2">
+                                    <div
+                                        className={`p-2 rounded-lg shrink-0 mt-0.5 ${
+                                            voiceEnabled
+                                                ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+                                                : "bg-muted text-muted-foreground"
+                                        }`}
+                                    >
+                                        <Mic className="h-5 w-5" />
                                     </div>
-                                    <p className="text-xs text-muted-foreground">
-                                        {isEnabled
-                                            ? "Widget icon is active and visible on websites using this snippet."
-                                            : "Widget icon is completely invisible on your website. Code snippet remains ineffective until re-enabled."}
-                                    </p>
+                                    <div className="space-y-1 min-w-0">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <span className="text-sm font-semibold text-foreground">
+                                                Talk to Agent
+                                            </span>
+                                            <span
+                                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium ${
+                                                    voiceEnabled
+                                                        ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
+                                                        : "bg-muted text-muted-foreground border"
+                                                }`}
+                                            >
+                                                <span
+                                                    className={`h-1.5 w-1.5 rounded-full ${
+                                                        voiceEnabled ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground"
+                                                    }`}
+                                                />
+                                                {voiceEnabled ? "Live" : "Disabled"}
+                                            </span>
+                                        </div>
+                                        <p className="text-xs text-muted-foreground leading-snug">
+                                            {voiceEnabled
+                                                ? "Voice button is live & visible on websites."
+                                                : "Voice button is completely hidden on websites."}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-1.5 pl-2 shrink-0">
+                                    {togglingVoice && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+                                    <Switch
+                                        id="voice-widget-toggle"
+                                        checked={voiceEnabled}
+                                        onCheckedChange={handleToggleVoice}
+                                        disabled={togglingVoice}
+                                        aria-label="Toggle voice widget visibility"
+                                    />
                                 </div>
                             </div>
-                            <div className="flex items-center gap-2 pl-4">
-                                {toggling && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-                                <Switch
-                                    id="embed-enabled"
-                                    checked={isEnabled}
-                                    onCheckedChange={handleToggleActive}
-                                    disabled={toggling}
-                                    aria-label="Toggle widget active status"
-                                />
+
+                            {/* Chat Agent Toggle Card */}
+                            <div
+                                className={`flex items-center justify-between p-4 rounded-xl border transition-all ${
+                                    chatEnabled
+                                        ? "bg-emerald-500/10 border-emerald-500/30"
+                                        : "bg-muted/40 border-border"
+                                }`}
+                            >
+                                <div className="flex items-start gap-3 min-w-0 pr-2">
+                                    <div
+                                        className={`p-2 rounded-lg shrink-0 mt-0.5 ${
+                                            chatEnabled
+                                                ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+                                                : "bg-muted text-muted-foreground"
+                                        }`}
+                                    >
+                                        <MessageSquare className="h-5 w-5" />
+                                    </div>
+                                    <div className="space-y-1 min-w-0">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <span className="text-sm font-semibold text-foreground">
+                                                Chat with Agent
+                                            </span>
+                                            <span
+                                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium ${
+                                                    chatEnabled
+                                                        ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
+                                                        : "bg-muted text-muted-foreground border"
+                                                }`}
+                                            >
+                                                <span
+                                                    className={`h-1.5 w-1.5 rounded-full ${
+                                                        chatEnabled ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground"
+                                                    }`}
+                                                />
+                                                {chatEnabled ? "Live" : "Disabled"}
+                                            </span>
+                                        </div>
+                                        <p className="text-xs text-muted-foreground leading-snug">
+                                            {chatEnabled
+                                                ? "Chat bubble is live & visible on websites."
+                                                : "Chat bubble is completely hidden on websites."}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-1.5 pl-2 shrink-0">
+                                    {togglingChat && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+                                    <Switch
+                                        id="chat-widget-toggle"
+                                        checked={chatEnabled}
+                                        onCheckedChange={handleToggleChat}
+                                        disabled={togglingChat}
+                                        aria-label="Toggle chat widget visibility"
+                                    />
+                                </div>
                             </div>
                         </div>
 
@@ -778,23 +909,30 @@ export function EmbedDialog({
                                             <div className="flex items-center gap-2.5">
                                                 <div className="flex items-center gap-2 bg-muted/50 px-2.5 py-1 rounded-lg border">
                                                     <span className="text-xs font-medium flex items-center gap-1.5">
-                                                        {isEnabled ? (
+                                                        {isCurrentSnippetActive ? (
                                                             <>
                                                                 <Eye className="h-3.5 w-3.5 text-emerald-500" />
-                                                                <span className="text-emerald-600 dark:text-emerald-400 font-semibold">Active</span>
+                                                                <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+                                                                    {activeScriptType === "chat" ? "Chat Active" : "Voice Active"}
+                                                                </span>
                                                             </>
                                                         ) : (
                                                             <>
                                                                 <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
-                                                                <span className="text-muted-foreground">Inactive</span>
+                                                                <span className="text-muted-foreground">
+                                                                    {activeScriptType === "chat" ? "Chat Disabled" : "Voice Disabled"}
+                                                                </span>
                                                             </>
                                                         )}
                                                     </span>
+                                                    {isCurrentSnippetToggling && (
+                                                        <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                                                    )}
                                                     <Switch
-                                                        checked={isEnabled}
-                                                        onCheckedChange={handleToggleActive}
-                                                        disabled={toggling}
-                                                        aria-label="Toggle snippet visibility"
+                                                        checked={isCurrentSnippetActive}
+                                                        onCheckedChange={handleCurrentSnippetToggle}
+                                                        disabled={isCurrentSnippetToggling}
+                                                        aria-label={`Toggle ${activeScriptType === "chat" ? "chat" : "voice"} snippet visibility`}
                                                     />
                                                 </div>
 
@@ -819,18 +957,18 @@ export function EmbedDialog({
                                         </div>
 
                                         {/* State Banner / Explainer */}
-                                        {isEnabled ? (
+                                        {isCurrentSnippetActive ? (
                                             <div className="flex items-center gap-2 p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-800 dark:text-emerald-200">
                                                 <span className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" />
                                                 <span>
-                                                    <strong>Snippet is active:</strong> The {activeScriptType === "chat" ? "chat" : "voice"} widget icon is visible and working on your website.
+                                                    <strong>{activeScriptType === "chat" ? "Chat widget" : "Voice agent"} is active:</strong> The {activeScriptType === "chat" ? "chat bubble" : "voice button"} is visible and operating on websites using this snippet.
                                                 </span>
                                             </div>
                                         ) : (
                                             <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-200">
                                                 <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
                                                 <span>
-                                                    <strong>Snippet is disabled (Widget invisible):</strong> The widget icon is hidden on your website. You don&apos;t need to remove or change website code — simply flip the toggle back ON anytime to make it reappear.
+                                                    <strong>{activeScriptType === "chat" ? "Chat widget" : "Voice agent"} is disabled (invisible):</strong> The {activeScriptType === "chat" ? "chat bubble" : "voice button"} is hidden on your website. Flip the toggle back ON anytime to make it reappear without modifying website code.
                                                 </span>
                                             </div>
                                         )}
@@ -838,7 +976,7 @@ export function EmbedDialog({
                                         <div className="relative">
                                             <pre
                                                 className={`border rounded-lg p-4 text-xs font-mono overflow-x-auto whitespace-pre-wrap break-all transition-opacity ${
-                                                    isEnabled ? "bg-muted/70 opacity-100" : "bg-muted/30 opacity-70"
+                                                    isCurrentSnippetActive ? "bg-muted/70 opacity-100" : "bg-muted/30 opacity-70"
                                                 }`}
                                             >
                                                 <code>{displayedScript}</code>

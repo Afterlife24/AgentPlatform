@@ -1321,21 +1321,22 @@
     }
 
     // Verify token status and fetch widget configuration BEFORE mounting DOM
-    fetch(`${state.apiEndpoint}/api/v1/public/embed/config/${state.token}`, {
+    fetch(`${state.apiEndpoint}/api/v1/public/embed/config/${state.token}?widget_type=chat`, {
       method: 'GET',
       headers: { 'Origin': window.location.origin },
     })
       .then(function (res) {
         if (!res.ok) {
           // Token is inactive (HTTP 403), disabled, or invalid
-          console.warn('AgentX Chat Widget: Embed token is disabled or inactive (' + res.status + '). Widget will not be displayed.');
+          console.warn('AgentX Chat Widget: Chat widget is disabled or inactive (' + res.status + '). Widget will not be displayed.');
           unmountDOM();
           return null;
         }
         return res.json();
       })
       .then(function (cfg) {
-        if (!cfg) {
+        if (!cfg || cfg.chat_enabled === false || (cfg.settings && (cfg.settings.chatEnabled === false || cfg.settings.chat_enabled === false))) {
+          console.warn('AgentX Chat Widget: Chat widget is disabled. Widget will not be displayed.');
           unmountDOM();
           return;
         }

@@ -65,6 +65,8 @@ class EmbedConfigResponse(BaseModel):
     chat_button_text: Optional[str] = None
     chat_button_color: Optional[str] = None
     chat_title: Optional[str] = None
+    voice_enabled: bool = True
+    chat_enabled: bool = True
 
 
 class EmbedChatMessageRequest(BaseModel):
@@ -335,6 +337,11 @@ async def initialize_embed_session(
     if not embed_token.is_active:
         raise HTTPException(status_code=403, detail="Embed token is inactive")
 
+    settings = dict(embed_token.settings or {})
+    voice_enabled = settings.get("voiceEnabled", settings.get("voice_enabled", True))
+    if not voice_enabled:
+        raise HTTPException(status_code=403, detail="Voice widget is disabled")
+
     # Check expiration
     if embed_token.expires_at and embed_token.expires_at < datetime.now(UTC):
         raise HTTPException(status_code=403, detail="Embed token has expired")
@@ -415,7 +422,12 @@ async def options_embed_config(token: str, request: Request):
 
 
 @router.get("/config/{token}", response_model=EmbedConfigResponse)
-async def get_embed_config(token: str, request: Request, response: Response):
+async def get_embed_config(
+    token: str,
+    request: Request,
+    response: Response,
+    widget_type: Optional[str] = None,
+):
     """Get embed configuration without creating a session.
 
     This endpoint is used to fetch widget configuration for display purposes
@@ -443,6 +455,14 @@ async def get_embed_config(token: str, request: Request, response: Response):
 
     # Extract settings with defaults
     settings = dict(embed_token.settings or {})
+    voice_enabled = settings.get("voiceEnabled", settings.get("voice_enabled", True))
+    chat_enabled = settings.get("chatEnabled", settings.get("chat_enabled", True))
+
+    # Granular widget check if specified
+    if widget_type == "voice" and not voice_enabled:
+        raise HTTPException(status_code=403, detail="Voice widget is inactive")
+    if widget_type == "chat" and not chat_enabled:
+        raise HTTPException(status_code=403, detail="Chat widget is inactive")
 
     # Voice widget settings (consumed by dograh-widget.js)
     voice_position = settings.get("voicePosition") or settings.get("position", "bottom-right")
@@ -481,6 +501,8 @@ async def get_embed_config(token: str, request: Request, response: Response):
         chat_button_text=chat_button_text,
         chat_button_color=chat_button_color,
         chat_title=chat_title,
+        voice_enabled=bool(voice_enabled),
+        chat_enabled=bool(chat_enabled),
     )
 
 
@@ -587,6 +609,12 @@ async def send_embed_chat_message(
         raise HTTPException(status_code=404, detail="Invalid embed token")
     if not embed_token.is_active:
         raise HTTPException(status_code=403, detail="Embed token is inactive")
+
+    settings = dict(embed_token.settings or {})
+    chat_enabled = settings.get("chatEnabled", settings.get("chat_enabled", True))
+    if not chat_enabled:
+        raise HTTPException(status_code=403, detail="Chat widget is disabled")
+
     if embed_token.expires_at and embed_token.expires_at < datetime.now(UTC):
         raise HTTPException(status_code=403, detail="Embed token has expired")
 

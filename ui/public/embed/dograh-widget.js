@@ -103,7 +103,7 @@
 
     try {
       // Fetch configuration from API
-      const configResponse = await fetch(`${state.config.apiBaseUrl}/api/v1/public/embed/config/${token}`, {
+      const configResponse = await fetch(`${state.config.apiBaseUrl}/api/v1/public/embed/config/${token}?widget_type=voice`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -116,6 +116,13 @@
       }
 
       const configData = await configResponse.json();
+
+      if (configData.voice_enabled === false || (configData.settings && (configData.settings.voiceEnabled === false || configData.settings.voice_enabled === false))) {
+        console.warn('Dograh Voice Widget: Voice widget is disabled. Widget will not be displayed.');
+        const existing = document.getElementById('dograh-widget-container') || document.querySelector('.dograh-widget-button');
+        if (existing) existing.remove();
+        return;
+      }
 
       // Merge fetched configuration with defaults
       state.config = {
@@ -130,7 +137,7 @@
         autoStart: configData.auto_start || false
       };
     } catch (error) {
-      console.warn('Dograh Voice Widget: Embed token is disabled or inactive. Widget will not be displayed.', error);
+      console.warn('Dograh Voice Widget: Voice widget is disabled or inactive. Widget will not be displayed.', error);
       const existing = document.getElementById('dograh-widget-container') || document.querySelector('.dograh-widget-button');
       if (existing) existing.remove();
       return;
