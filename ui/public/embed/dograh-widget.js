@@ -130,7 +130,9 @@
         autoStart: configData.auto_start || false
       };
     } catch (error) {
-      console.error('Dograh Widget: Failed to fetch configuration', error);
+      console.warn('Dograh Voice Widget: Embed token is disabled or inactive. Widget will not be displayed.', error);
+      const existing = document.getElementById('dograh-widget-container') || document.querySelector('.dograh-widget-button');
+      if (existing) existing.remove();
       return;
     }
 

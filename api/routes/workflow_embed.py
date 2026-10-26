@@ -55,6 +55,11 @@ class EmbedTokenRequest(BaseModel):
     settings: Optional[dict] = None
     usage_limit: Optional[int] = None
     expires_in_days: Optional[int] = 30
+    is_active: Optional[bool] = None
+
+
+class ToggleEmbedTokenRequest(BaseModel):
+    is_active: bool
 
 
 class EmbedTokenResponse(BaseModel):
@@ -100,8 +105,10 @@ async def create_or_update_embed_token(
     if embed_request.expires_in_days:
         expires_at = datetime.now(UTC) + timedelta(days=embed_request.expires_in_days)
 
+    is_active = embed_request.is_active if embed_request.is_active is not None else True
+
     if existing_tokens:
-        # Update the existing token (reactivate if needed)
+        # Update the existing token (reactivate/deactivate as specified)
         token = await db_client.update_embed_token(
             existing_tokens[0].id,
             user.selected_organization_id,
@@ -109,7 +116,7 @@ async def create_or_update_embed_token(
             settings=embed_request.settings,
             usage_limit=embed_request.usage_limit,
             expires_at=expires_at,
-            is_active=True,
+            is_active=is_active,
         )
     else:
         # Create new token
@@ -122,6 +129,12 @@ async def create_or_update_embed_token(
             usage_limit=embed_request.usage_limit,
             expires_at=expires_at,
         )
+        if not is_active:
+            token = await db_client.update_embed_token(
+                token.id,
+                user.selected_organization_id,
+                is_active=False,
+            )
 
     capture_event(
         distinct_id=str(user.provider_id),
@@ -171,17 +184,77 @@ async def get_embed_token(
             status_code=404, detail=f"Workflow with id {workflow_id} not found"
         )
 
-    # Get active embed tokens for this workflow
+    # Get embed tokens for this workflow (active or inactive)
     tokens = await db_client.get_embed_tokens_by_workflow(
-        workflow_id, user.selected_organization_id, active_only=True
+        workflow_id, user.selected_organization_id, active_only=False
     )
 
     if not tokens:
         return None
 
-    token = tokens[0]  # There should be only one active token per workflow
+    token = tokens[0]  # Return the workflow's embed token
 
     # Generate embed scripts
+    embed_script = generate_embed_script(token)
+    chat_embed_script = generate_chat_embed_script(token)
+
+    return EmbedTokenResponse(
+        id=token.id,
+        token=token.token,
+        allowed_domains=token.allowed_domains,
+        settings=token.settings,
+        is_active=token.is_active,
+        usage_count=token.usage_count,
+        usage_limit=token.usage_limit,
+        expires_at=token.expires_at,
+        created_at=token.created_at,
+        embed_script=embed_script,
+        chat_embed_script=chat_embed_script,
+    )
+
+
+@router.patch("/{workflow_id}/embed-token/toggle")
+async def toggle_embed_token(
+    workflow_id: int,
+    toggle_request: ToggleEmbedTokenRequest,
+    user: UserModel = Depends(get_user),
+) -> EmbedTokenResponse:
+    """
+    Instantly toggle embed token between active and inactive states.
+    When inactive, external website widgets will not render.
+    """
+    workflow = await db_client.get_workflow(
+        workflow_id, organization_id=user.selected_organization_id
+    )
+    if not workflow:
+        raise HTTPException(
+            status_code=404, detail=f"Workflow with id {workflow_id} not found"
+        )
+
+    tokens = await db_client.get_embed_tokens_by_workflow(
+        workflow_id, user.selected_organization_id, active_only=False
+    )
+
+    if not tokens:
+        # Create token if one doesn't exist yet
+        token = await db_client.create_embed_token(
+            workflow_id=workflow_id,
+            organization_id=user.selected_organization_id,
+            created_by=user.id,
+        )
+        if not toggle_request.is_active:
+            token = await db_client.update_embed_token(
+                token.id,
+                user.selected_organization_id,
+                is_active=False,
+            )
+    else:
+        token = await db_client.update_embed_token(
+            tokens[0].id,
+            user.selected_organization_id,
+            is_active=toggle_request.is_active,
+        )
+
     embed_script = generate_embed_script(token)
     chat_embed_script = generate_chat_embed_script(token)
 
@@ -217,14 +290,14 @@ async def deactivate_embed_token(
             status_code=404, detail=f"Workflow with id {workflow_id} not found"
         )
 
-    # Get active embed tokens for this workflow
+    # Get embed tokens for this workflow (active or inactive)
     tokens = await db_client.get_embed_tokens_by_workflow(
-        workflow_id, user.selected_organization_id, active_only=True
+        workflow_id, user.selected_organization_id, active_only=False
     )
 
     if not tokens:
         raise HTTPException(
-            status_code=404, detail="No active embed token found for this workflow"
+            status_code=404, detail="No embed token found for this workflow"
         )
 
     # Deactivate the token
@@ -233,6 +306,6 @@ async def deactivate_embed_token(
     )
 
     if success:
-        return {"message": "Embed token deactivated successfully"}
+        return {"message": "Embed token deactivated successfully", "is_active": False}
     else:
         raise HTTPException(status_code=500, detail="Failed to deactivate embed token")

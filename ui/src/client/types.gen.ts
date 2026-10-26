@@ -2426,6 +2426,10 @@ export type EmbedTokenRequest = {
      * Expires In Days
      */
     expires_in_days?: number | null;
+    /**
+     * Is Active
+     */
+    is_active?: boolean | null;
 };
 
 /**

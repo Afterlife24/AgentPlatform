@@ -1300,81 +1300,110 @@
     });
   }
 
+  function unmountDOM() {
+    const root = document.getElementById('agentx-chat-widget-root');
+    if (root) {
+      root.remove();
+    }
+    const styles = document.getElementById('agentx-chat-widget-styles');
+    if (styles) {
+      styles.remove();
+    }
+    window.__AGENTX_CHAT_WIDGET_INITIALIZED__ = false;
+  }
+
   // 7. Initialization Lifecycle
   function init() {
-    initOrRestoreSession();
-    injectStyles();
-    mountDOM();
-
-    // Fetch widget config if available
-    if (state.token) {
-      fetch(`${state.apiEndpoint}/api/v1/public/embed/config/${state.token}`, {
-        method: 'GET',
-        headers: { 'Origin': window.location.origin },
-      })
-        .then(function (res) {
-          return res.ok ? res.json() : null;
-        })
-        .then(function (cfg) {
-          if (cfg) {
-            const pos =
-              (cfg.settings && cfg.settings.chatPosition) ||
-              cfg.chat_position ||
-              'bottom-right';
-
-            state.config.position = pos;
-
-            const root = document.getElementById('agentx-chat-widget-root');
-            if (root && !sessionStorage.getItem(STORAGE_KEYS.TRIGGER_POS)) {
-              if (pos === 'bottom-left') {
-                root.classList.add('pos-bottom-left');
-              } else {
-                root.classList.remove('pos-bottom-left');
-              }
-            }
-
-            const title = (cfg.settings && cfg.settings.chatTitle) || cfg.chat_title || cfg.workflow_name || state.config.title;
-            if (title) {
-              state.config.title = title;
-              const titleEl = document.getElementById('agentx-header-title');
-              if (titleEl) titleEl.textContent = title;
-              const welcomeTitle = document.querySelector('.agentx-welcome-title');
-              if (welcomeTitle) welcomeTitle.textContent = title;
-            }
-
-            const subtitle = (cfg.settings && cfg.settings.chatSubtitle) || state.config.subtitle;
-            if (subtitle) {
-              state.config.subtitle = subtitle;
-              const subEl = document.getElementById('agentx-header-sub');
-              if (subEl) subEl.textContent = subtitle;
-            }
-
-            const btnColor = (cfg.settings && cfg.settings.chatButtonColor) || cfg.chat_button_color || '#2563eb';
-            if (btnColor) {
-              state.config.buttonColor = btnColor;
-              const trigger = document.getElementById('agentx-chat-trigger');
-              if (trigger) trigger.style.background = btnColor;
-              const avatar = document.querySelector('.agentx-avatar');
-              if (avatar) avatar.style.background = btnColor;
-              const welcomeBadge = document.querySelector('.agentx-welcome-badge');
-              if (welcomeBadge) welcomeBadge.style.background = btnColor;
-            }
-
-            const btnText = (cfg.settings && cfg.settings.chatButtonText) || cfg.chat_button_text || 'Chat with Agent';
-            if (btnText) {
-              state.config.buttonText = btnText;
-              const trigger = document.getElementById('agentx-chat-trigger');
-              if (trigger) {
-                trigger.setAttribute('title', btnText);
-                trigger.setAttribute('aria-label', btnText);
-              }
-              const pillTextEl = document.getElementById('agentx-pill-text');
-              if (pillTextEl) pillTextEl.textContent = btnText;
-            }
-          }
-        })
-        .catch(function () {});
+    if (!state.token) {
+      console.warn('AgentX Chat Widget: No embed token provided. Widget disabled.');
+      unmountDOM();
+      return;
     }
+
+    // Verify token status and fetch widget configuration BEFORE mounting DOM
+    fetch(`${state.apiEndpoint}/api/v1/public/embed/config/${state.token}`, {
+      method: 'GET',
+      headers: { 'Origin': window.location.origin },
+    })
+      .then(function (res) {
+        if (!res.ok) {
+          // Token is inactive (HTTP 403), disabled, or invalid
+          console.warn('AgentX Chat Widget: Embed token is disabled or inactive (' + res.status + '). Widget will not be displayed.');
+          unmountDOM();
+          return null;
+        }
+        return res.json();
+      })
+      .then(function (cfg) {
+        if (!cfg) {
+          unmountDOM();
+          return;
+        }
+
+        // Token is active and valid: mount DOM and apply configurations
+        initOrRestoreSession();
+        injectStyles();
+        mountDOM();
+
+        const pos =
+          (cfg.settings && cfg.settings.chatPosition) ||
+          cfg.chat_position ||
+          'bottom-right';
+
+        state.config.position = pos;
+
+        const root = document.getElementById('agentx-chat-widget-root');
+        if (root && !sessionStorage.getItem(STORAGE_KEYS.TRIGGER_POS)) {
+          if (pos === 'bottom-left') {
+            root.classList.add('pos-bottom-left');
+          } else {
+            root.classList.remove('pos-bottom-left');
+          }
+        }
+
+        const title = (cfg.settings && cfg.settings.chatTitle) || cfg.chat_title || cfg.workflow_name || state.config.title;
+        if (title) {
+          state.config.title = title;
+          const titleEl = document.getElementById('agentx-header-title');
+          if (titleEl) titleEl.textContent = title;
+          const welcomeTitle = document.querySelector('.agentx-welcome-title');
+          if (welcomeTitle) welcomeTitle.textContent = title;
+        }
+
+        const subtitle = (cfg.settings && cfg.settings.chatSubtitle) || state.config.subtitle;
+        if (subtitle) {
+          state.config.subtitle = subtitle;
+          const subEl = document.getElementById('agentx-header-sub');
+          if (subEl) subEl.textContent = subtitle;
+        }
+
+        const btnColor = (cfg.settings && cfg.settings.chatButtonColor) || cfg.chat_button_color || '#2563eb';
+        if (btnColor) {
+          state.config.buttonColor = btnColor;
+          const trigger = document.getElementById('agentx-chat-trigger');
+          if (trigger) trigger.style.background = btnColor;
+          const avatar = document.querySelector('.agentx-avatar');
+          if (avatar) avatar.style.background = btnColor;
+          const welcomeBadge = document.querySelector('.agentx-welcome-badge');
+          if (welcomeBadge) welcomeBadge.style.background = btnColor;
+        }
+
+        const btnText = (cfg.settings && cfg.settings.chatButtonText) || cfg.chat_button_text || 'Chat with Agent';
+        if (btnText) {
+          state.config.buttonText = btnText;
+          const trigger = document.getElementById('agentx-chat-trigger');
+          if (trigger) {
+            trigger.setAttribute('title', btnText);
+            trigger.setAttribute('aria-label', btnText);
+          }
+          const pillTextEl = document.getElementById('agentx-pill-text');
+          if (pillTextEl) pillTextEl.textContent = btnText;
+        }
+      })
+      .catch(function (err) {
+        console.warn('AgentX Chat Widget: Error verifying embed configuration.', err);
+        unmountDOM();
+      });
   }
 
   // Wait for DOM to be ready
