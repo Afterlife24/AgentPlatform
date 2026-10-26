@@ -31,6 +31,7 @@ services:
     restart: unless-stopped
 
   minio:
+    user: root
     restart: unless-stopped
 
   nginx:
@@ -107,6 +108,7 @@ services:
     # (adds --proxy-headers to uvicorn for Twilio signature validation behind nginx)
     volumes:
       - ./scripts/start_services_docker_local.sh:/app/scripts/start_services_docker_local.sh:ro
+      - ./api:/app/api
     command: ["./scripts/start_services_docker_local.sh"]
 
   # Same image for the ARQ worker (built once, reused)
@@ -117,6 +119,8 @@ services:
     image: dograh-local/dograh-api:local
     pull_policy: never
     restart: unless-stopped
+    volumes:
+      - ./api:/app/api
     environment:
       SMTP_HOST: "${SMTP_HOST:-smtp.gmail.com}"
       SMTP_PORT: "${SMTP_PORT:-587}"
@@ -221,5 +225,17 @@ services:
       - "3001:3001"
     depends_on:
       - whatsapp-adapter
+    networks:
+      - app-network
+
+  # agentX Consultancy — Vite/React static site served on port 3002
+  agentx-consultancy:
+    build:
+      context: ../agentX_consultancy
+      dockerfile: Dockerfile
+    container_name: agentx_consultancy
+    restart: unless-stopped
+    ports:
+      - "3002:80"
     networks:
       - app-network
