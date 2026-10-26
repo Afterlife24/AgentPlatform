@@ -8,6 +8,8 @@ from loguru import logger
 
 from api.db import db_client
 from api.db.models import WorkflowRunTextSessionModel
+from api.enums import PostHogEvent
+from api.services.posthog_client import capture_text_chat_lifecycle_event
 from api.db.workflow_run_text_session_client import (
     WorkflowRunTextSessionRevisionConflictError,
 )
@@ -281,6 +283,29 @@ async def execute_pending_text_chat_turn(
                 run_id,
                 e,
             )
+
+        # Fire CALL_COMPLETED so the finished chat shows in PostHog activity like
+        # a call does (mirrors the voice pipeline's lifecycle event). Resolve the
+        # user's provider_id by id — the loaded workflow relationship exposes
+        # workflow.user_id (a column) but not the user row, and touching a lazy
+        # relationship outside its session would raise in async SQLAlchemy.
+        workflow_run = text_session.workflow_run
+        workflow = getattr(workflow_run, "workflow", None)
+        workflow_id = getattr(workflow_run, "workflow_id", None)
+        user_id = getattr(workflow, "user_id", None)
+        provider_id = None
+        if user_id is not None:
+            try:
+                user_row = await db_client.get_user_by_id(user_id)
+                provider_id = getattr(user_row, "provider_id", None)
+            except Exception:
+                provider_id = None
+        capture_text_chat_lifecycle_event(
+            event=PostHogEvent.CALL_COMPLETED.value,
+            distinct_id=str(provider_id) if provider_id else None,
+            workflow_run_id=run_id,
+            workflow_id=workflow_id,
+        )
 
     return await _reload_text_chat_session(run_id)
 

@@ -63,6 +63,7 @@ class ServiceType(Enum):
 
 class ServiceProviders(str, Enum):
     OPENAI = "openai"
+    ANTHROPIC = "anthropic"
     DEEPGRAM = "deepgram"
     GROQ = "groq"
     OPENROUTER = "openrouter"
@@ -97,6 +98,7 @@ class ServiceProviders(str, Enum):
 class BaseServiceConfiguration(BaseModel):
     provider: Literal[
         ServiceProviders.OPENAI,
+        ServiceProviders.ANTHROPIC,
         ServiceProviders.DEEPGRAM,
         ServiceProviders.GROQ,
         ServiceProviders.OPENROUTER,
@@ -239,6 +241,7 @@ def provider_model_config(
 
 # Suggested models for each provider (used for UI dropdown)
 OPENAI_PROVIDER_MODEL_CONFIG = provider_model_config("OpenAI")
+ANTHROPIC_PROVIDER_MODEL_CONFIG = provider_model_config("Claude")
 GOOGLE_PROVIDER_MODEL_CONFIG = provider_model_config("Google")
 GROQ_PROVIDER_MODEL_CONFIG = provider_model_config("Groq")
 OPENROUTER_PROVIDER_MODEL_CONFIG = provider_model_config("Open Router")
@@ -305,6 +308,12 @@ OPENAI_MODELS = [
     "gpt-3.5-turbo",
 ]
 
+ANTHROPIC_MODELS = [
+    "claude-3-5-sonnet-latest",
+    "claude-3-5-haiku-latest",
+    "claude-sonnet-4-20250514",
+]
+
 GROQ_MODELS = [
     "llama-3.3-70b-versatile",
     "deepseek-r1-distill-llama-70b",
@@ -346,6 +355,17 @@ class OpenAILLMService(BaseLLMConfiguration):
     base_url: str = Field(
         default="https://api.openai.com/v1",
         description="Override only if using an OpenAI-compatible API (e.g. local LLM, proxy).",
+    )
+
+
+@register_llm
+class AnthropicLLMService(BaseLLMConfiguration):
+    model_config = ANTHROPIC_PROVIDER_MODEL_CONFIG
+    provider: Literal[ServiceProviders.ANTHROPIC] = ServiceProviders.ANTHROPIC
+    model: str = Field(
+        default="claude-3-5-sonnet-latest",
+        description="Anthropic Claude chat model to use.",
+        json_schema_extra={"examples": ANTHROPIC_MODELS, "allow_custom_input": True},
     )
 
 
@@ -790,6 +810,7 @@ REALTIME_PROVIDERS = {
 LLMConfig = Annotated[
     Union[
         OpenAILLMService,
+        AnthropicLLMService,
         GoogleVertexLLMConfiguration,
         GroqLLMService,
         OpenRouterLLMConfiguration,

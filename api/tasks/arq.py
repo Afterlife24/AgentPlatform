@@ -8,6 +8,7 @@ from api.tasks.campaign_tasks import (
     process_campaign_batch,
     sync_campaign_source,
 )
+from api.tasks.pricing_sync_task import sync_model_pricing
 from arq.connections import ArqRedis, RedisSettings
 from arq import create_pool, cron, func
 import ssl
@@ -58,6 +59,8 @@ class WorkerSettings:
         # services.dograh.com). Default ARQ timeout (300s) isn't enough.
         func(process_knowledge_base_document, timeout=900),
         deliver_webhook,
+        # Weekly model-pricing catalog sync (populates the pending queue).
+        func(sync_model_pricing, timeout=120),
     ]
     cron_jobs = [
         # Safety net for webhook deliveries whose ARQ job was lost (worker
@@ -67,6 +70,14 @@ class WorkerSettings:
             minute=set(range(0, 60, 5)),
             second=0,
             run_at_startup=True,
+        ),
+        # Weekly pricing sync — Mondays 00:00 UTC. Populates the pending-approval
+        # queue; never changes live pricing on its own.
+        cron(
+            sync_model_pricing,
+            weekday=0,
+            hour=0,
+            minute=0,
         ),
     ]
     redis_settings = REDIS_SETTINGS

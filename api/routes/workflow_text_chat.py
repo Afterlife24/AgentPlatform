@@ -8,8 +8,9 @@ from pydantic import BaseModel, Field
 
 from api.db import db_client
 from api.db.models import UserModel, WorkflowRunTextSessionModel
-from api.enums import WorkflowRunMode
+from api.enums import PostHogEvent, WorkflowRunMode
 from api.services.auth.depends import get_user_with_selected_organization
+from api.services.posthog_client import capture_text_chat_lifecycle_event
 from api.services.quota_service import authorize_workflow_run_start
 from api.services.workflow.text_chat_session_service import (
     TextChatPendingTurnLostError,
@@ -177,6 +178,15 @@ async def create_text_chat_session(
 
     set_current_run_id(workflow_run.id)
     await _ensure_text_chat_quota(user, workflow_id, workflow_run.id)
+
+    # Fire CALL_STARTED so text chats show up in PostHog activity like calls do
+    # (voice fires this from the pipeline, which text chat never touches).
+    capture_text_chat_lifecycle_event(
+        event=PostHogEvent.CALL_STARTED.value,
+        distinct_id=str(user.provider_id) if user.provider_id else None,
+        workflow_run_id=workflow_run.id,
+        workflow_id=workflow_id,
+    )
 
     annotations = {
         "tester": {

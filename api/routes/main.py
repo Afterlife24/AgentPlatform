@@ -11,6 +11,7 @@ from api.routes.campaign import router as campaign_router
 from api.routes.credentials import router as credentials_router
 from api.routes.folder import router as folder_router
 from api.routes.internal_credits import router as internal_credits_router
+from api.routes.internal_pricing import router as internal_pricing_router
 from api.routes.knowledge_base import router as knowledge_base_router
 from api.routes.csv_tables import router as csv_tables_router
 from api.routes.node_types import router as node_types_router
@@ -68,6 +69,7 @@ router.include_router(auth_router)
 router.include_router(node_types_router)
 router.include_router(agent_stream_router)
 router.include_router(internal_credits_router)
+router.include_router(internal_pricing_router)
 
 for _integration_router in all_routers():
     router.include_router(_integration_router)

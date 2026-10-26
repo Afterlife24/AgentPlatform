@@ -365,6 +365,10 @@ async def test_authorize_workflow_run_oss_uses_key_paths_not_workflow_org(
     update_workflow_run = AsyncMock()
 
     monkeypatch.setattr(quota_service, "DEPLOYMENT_MODE", "oss")
+    # This test exercises the OSS Dograh-key path; wallet enforcement is a
+    # separate concern (covered by test_quota_wallet). Pin it off so the
+    # container's ENFORCE_CREDIT_BALANCE=true go-live setting doesn't bleed in.
+    monkeypatch.setattr(quota_service, "ENFORCE_CREDIT_BALANCE", False)
     _patch_workflow_context(monkeypatch)
     monkeypatch.setattr(
         quota_service.db_client,

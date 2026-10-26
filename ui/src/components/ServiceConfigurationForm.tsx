@@ -1,13 +1,12 @@
 "use client";
 
-import { ExternalLink, Plus, X } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 
 import { getDefaultConfigurationsApiV1UserConfigurationsDefaultsGet } from '@/client/sdk.gen';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -575,7 +574,11 @@ export function ServiceConfigurationForm({
 
                     {currentProvider && providerSchema && configFields[0] && (
                         <div className="space-y-2">
-                            <Label className="capitalize">{configFields[0].replace(/_/g, ' ')}</Label>
+                            <Label className="capitalize">
+                                {configFields[0] === "model"
+                                    ? "Select a Model"
+                                    : configFields[0].replace(/_/g, ' ')}
+                            </Label>
                             {renderField(service, configFields[0], providerSchema)}
                         </div>
                     )}
@@ -599,57 +602,8 @@ export function ServiceConfigurationForm({
                     </div>
                 )}
 
-                {currentProvider && providerSchema && providerSchema.properties.api_key && (
-                    <div className="space-y-2">
-                        <Label>{mode === 'override' ? 'API Key (leave empty to use global)' : 'API Key(s)'}</Label>
-                        {renderFieldDescription("api_key", providerSchema)}
-                        {apiKeys[service].map((key, index) => (
-                            <div key={index} className="flex gap-2">
-                                <Input
-                                    type="text"
-                                    placeholder="Enter API key"
-                                    value={key}
-                                    onChange={(e) => {
-                                        const newKeys = [...apiKeys[service]];
-                                        newKeys[index] = e.target.value;
-                                        setApiKeys(prev => ({ ...prev, [service]: newKeys }));
-                                    }}
-                                />
-                                {apiKeys[service].length > 1 && (
-                                    <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon"
-                                        className="shrink-0"
-                                        onClick={() => {
-                                            setApiKeys(prev => ({
-                                                ...prev,
-                                                [service]: prev[service].filter((_, i) => i !== index),
-                                            }));
-                                        }}
-                                    >
-                                        <X className="h-4 w-4" />
-                                    </Button>
-                                )}
-                            </div>
-                        ))}
-                        {mode !== 'override' && (
-                            <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => {
-                                    setApiKeys(prev => ({
-                                        ...prev,
-                                        [service]: [...prev[service], ""],
-                                    }));
-                                }}
-                            >
-                                <Plus className="h-4 w-4 mr-1" /> Add API Key
-                            </Button>
-                        )}
-                    </div>
-                )}
+                {/* Section 1: end-user API-key entry removed. Keys are sourced
+                    from environment variables server-side per provider. */}
             </div>
         );
     };
@@ -713,73 +667,32 @@ export function ServiceConfigurationForm({
         }
 
         if (actualSchema?.allow_custom_input && dropdownOptions && dropdownOptions.length > 0) {
+            // Section 1: the "Enter Custom Value" toggle is removed so a custom
+            // value can't bypass the curated provider/model list. Render the
+            // curated dropdown only.
             const fieldKey = `${service}_${field}`;
             const currentValue = watch(fieldKey) as string || "";
             const options = dropdownOptions;
 
-            if (isCustomInput[fieldKey]) {
-                return (
-                    <div className="space-y-2">
-                        <Input
-                            type="text"
-                            placeholder={`Enter ${field}`}
-                            value={currentValue}
-                            onChange={(e) => {
-                                setValue(fieldKey, e.target.value, { shouldDirty: true });
-                            }}
-                        />
-                        <div className="flex items-center space-x-2">
-                            <Checkbox
-                                id={`custom-input-${fieldKey}`}
-                                checked={true}
-                                onCheckedChange={(checked) => {
-                                    setIsCustomInput(prev => ({ ...prev, [fieldKey]: checked as boolean }));
-                                    if (!checked && options.length > 0) {
-                                        setValue(fieldKey, options[0], { shouldDirty: true });
-                                    }
-                                }}
-                            />
-                            <Label htmlFor={`custom-input-${fieldKey}`} className="text-sm font-normal cursor-pointer">
-                                Enter Custom Value
-                            </Label>
-                        </div>
-                    </div>
-                );
-            }
-
             return (
-                <div className="space-y-2">
-                    <Select
-                        value={currentValue}
-                        onValueChange={(value) => {
-                            if (!value) return;
-                            setValue(fieldKey, value, { shouldDirty: true });
-                        }}
-                    >
-                        <SelectTrigger className="w-full">
-                            <SelectValue placeholder={`Select ${field}`} />
-                        </SelectTrigger>
-                        <SelectContent>
-                            {options.map((value: string) => (
-                                <SelectItem key={value} value={value}>
-                                    {value}
-                                </SelectItem>
-                            ))}
-                        </SelectContent>
-                    </Select>
-                    <div className="flex items-center space-x-2">
-                        <Checkbox
-                            id={`custom-input-${fieldKey}-dropdown`}
-                            checked={false}
-                            onCheckedChange={(checked) => {
-                                setIsCustomInput(prev => ({ ...prev, [fieldKey]: checked as boolean }));
-                            }}
-                        />
-                        <Label htmlFor={`custom-input-${fieldKey}-dropdown`} className="text-sm font-normal cursor-pointer">
-                            Enter Custom Value
-                        </Label>
-                    </div>
-                </div>
+                <Select
+                    value={currentValue}
+                    onValueChange={(value) => {
+                        if (!value) return;
+                        setValue(fieldKey, value, { shouldDirty: true });
+                    }}
+                >
+                    <SelectTrigger className="w-full">
+                        <SelectValue placeholder={`Select ${field}`} />
+                    </SelectTrigger>
+                    <SelectContent>
+                        {options.map((value: string) => (
+                            <SelectItem key={value} value={value}>
+                                {value}
+                            </SelectItem>
+                        ))}
+                    </SelectContent>
+                </Select>
             );
         }
 
