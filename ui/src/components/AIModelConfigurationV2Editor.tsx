@@ -100,15 +100,21 @@ function byokConfigToLegacyShape(config: Record<string, unknown> | null): Record
     };
 }
 
+function filterOutDograh(serviceConfig: unknown): unknown {
+    const rec = asRecord(serviceConfig);
+    if (!rec || rec.provider === "dograh") return undefined;
+    return rec;
+}
+
 function effectiveConfigToLegacyShape(config: Record<string, unknown> | null): Record<string, unknown> | null {
     if (!config) return null;
     return {
         is_realtime: Boolean(config.is_realtime),
-        llm: config.llm,
-        tts: config.tts,
-        stt: config.stt,
-        realtime: config.realtime,
-        embeddings: config.embeddings,
+        llm: filterOutDograh(config.llm),
+        tts: filterOutDograh(config.tts),
+        stt: filterOutDograh(config.stt),
+        realtime: filterOutDograh(config.realtime),
+        embeddings: filterOutDograh(config.embeddings),
     };
 }
 
