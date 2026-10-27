@@ -6,7 +6,14 @@ from email.mime.text import MIMEText
 
 from loguru import logger
 
-from api.constants import SMTP_FROM_EMAIL, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT
+from api.constants import (
+    DEPLOYMENT_MODE,
+    ENVIRONMENT,
+    SMTP_FROM_EMAIL,
+    SMTP_HOST,
+    SMTP_PASSWORD,
+    SMTP_PORT,
+)
 
 
 async def send_otp_email(to_email: str, otp: str, purpose: str) -> None:
@@ -14,6 +21,13 @@ async def send_otp_email(to_email: str, otp: str, purpose: str) -> None:
 
     purpose: "signup" | "reset"
     """
+    if not SMTP_PASSWORD or not SMTP_FROM_EMAIL:
+        logger.warning(
+            f"SMTP credentials not configured. Skipping email send for {to_email}. "
+            f"=== VERIFICATION CODE ({purpose}): {otp} ==="
+        )
+        return
+
     if purpose == "signup":
         subject = "Your verification code"
         body_text = f"Your signup verification code is: {otp}\n\nIt expires in 10 minutes."
@@ -57,8 +71,15 @@ async def send_otp_email(to_email: str, otp: str, purpose: str) -> None:
             password=SMTP_PASSWORD,
             use_tls=False,
             start_tls=True,
+            timeout=10,
         )
         logger.info(f"OTP email sent to {to_email} (purpose={purpose})")
     except Exception as e:
         logger.error(f"Failed to send OTP email to {to_email}: {e}")
+        if ENVIRONMENT == "local" or DEPLOYMENT_MODE == "oss":
+            logger.warning(
+                f"[LOCAL/OSS] Falling back after SMTP error. "
+                f"=== VERIFICATION CODE ({purpose}) for {to_email}: {otp} ==="
+            )
+            return
         raise

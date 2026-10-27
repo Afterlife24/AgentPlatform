@@ -62,6 +62,7 @@ async def signup_send_otp(request: SendSignupOtpRequest):
     except Exception:
         raise HTTPException(status_code=500, detail="Failed to send verification email. Please try again.")
 
+    logger.info(f"=== [SIGNUP OTP] Email: {request.email} | Code: {otp} ===")
     return MessageResponse(message="Verification code sent. Check your email.")
 
 
