@@ -1,21 +1,12 @@
-"""Email service for OTP delivery (supports Resend HTTP API, SendGrid HTTP API, and SMTP)."""
+"""Gmail SMTP email service for OTP delivery."""
 
-import os
+import aiosmtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-import aiosmtplib
-import httpx
 from loguru import logger
 
-from api.constants import (
-    DEPLOYMENT_MODE,
-    ENVIRONMENT,
-    SMTP_FROM_EMAIL,
-    SMTP_HOST,
-    SMTP_PASSWORD,
-    SMTP_PORT,
-)
+from api.constants import SMTP_FROM_EMAIL, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT
 
 
 async def send_otp_email(to_email: str, otp: str, purpose: str) -> None:
@@ -50,76 +41,9 @@ async def send_otp_email(to_email: str, otp: str, purpose: str) -> None:
         </div>
         """
 
-    resend_api_key = os.getenv("RESEND_API_KEY")
-    resend_from_email = os.getenv("RESEND_FROM_EMAIL") or "onboarding@resend.dev"
-    sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
-    sendgrid_from_email = os.getenv("SENDGRID_FROM_EMAIL") or os.getenv("SMTP_FROM_EMAIL") or "noreply@dograh.com"
-    smtp_host = os.getenv("SMTP_HOST") or SMTP_HOST
-    smtp_port = int(os.getenv("SMTP_PORT") or SMTP_PORT)
-    smtp_from_email = os.getenv("SMTP_FROM_EMAIL") or SMTP_FROM_EMAIL
-    smtp_password = os.getenv("SMTP_PASSWORD") or SMTP_PASSWORD
-
-    # 1. First priority: Resend HTTP API (works over Port 443 HTTPS - immune to ISP SMTP port blocks)
-    if resend_api_key:
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.post(
-                    "https://api.resend.com/emails",
-                    headers={"Authorization": f"Bearer {resend_api_key}"},
-                    json={
-                        "from": resend_from_email,
-                        "to": [to_email],
-                        "subject": subject,
-                        "html": body_html,
-                    },
-                )
-                if res.status_code in (200, 201):
-                    logger.info(f"OTP email successfully sent via Resend API to {to_email} (purpose={purpose})")
-                    return
-                else:
-                    logger.error(f"Resend API error ({res.status_code}): {res.text}")
-        except Exception as exc:
-            logger.error(f"Failed to send email via Resend API: {exc}")
-
-    # 2. Second priority: SendGrid HTTP API (works over Port 443 HTTPS)
-    if sendgrid_api_key:
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.post(
-                    "https://api.sendgrid.com/v3/mail/send",
-                    headers={
-                        "Authorization": f"Bearer {sendgrid_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "personalizations": [{"to": [{"email": to_email}]}],
-                        "from": {"email": sendgrid_from_email},
-                        "subject": subject,
-                        "content": [
-                            {"type": "text/plain", "value": body_text},
-                            {"type": "text/html", "value": body_html},
-                        ],
-                    },
-                )
-                if res.status_code in (200, 202):
-                    logger.info(f"OTP email successfully sent via SendGrid API to {to_email} (purpose={purpose})")
-                    return
-                else:
-                    logger.error(f"SendGrid API error ({res.status_code}): {res.text}")
-        except Exception as exc:
-            logger.error(f"Failed to send email via SendGrid API: {exc}")
-
-    # 3. Third priority: SMTP (ports 587 or 465)
-    if not smtp_password or not smtp_from_email:
-        logger.warning(
-            f"No email provider configured (set RESEND_API_KEY or SMTP_PASSWORD in .env). "
-            f"=== OTP VERIFICATION CODE ({purpose}) for {to_email}: {otp} ==="
-        )
-        return
-
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = smtp_from_email
+    msg["From"] = SMTP_FROM_EMAIL
     msg["To"] = to_email
     msg.attach(MIMEText(body_text, "plain"))
     msg.attach(MIMEText(body_html, "html"))
@@ -127,22 +51,14 @@ async def send_otp_email(to_email: str, otp: str, purpose: str) -> None:
     try:
         await aiosmtplib.send(
             msg,
-            hostname=smtp_host,
-            port=smtp_port,
-            username=smtp_from_email,
-            password=smtp_password,
-            use_tls=(smtp_port == 465),
-            start_tls=(smtp_port != 465),
-            timeout=10,
+            hostname=SMTP_HOST,
+            port=SMTP_PORT,
+            username=SMTP_FROM_EMAIL,
+            password=SMTP_PASSWORD,
+            use_tls=False,
+            start_tls=True,
         )
-        logger.info(f"OTP email sent via SMTP to {to_email} (purpose={purpose})")
+        logger.info(f"OTP email sent to {to_email} (purpose={purpose})")
     except Exception as e:
-        logger.error(f"Failed to send OTP email to {to_email} via SMTP: {e}")
-        if ENVIRONMENT == "local" or DEPLOYMENT_MODE == "oss":
-            logger.warning(
-                f"[LOCAL/OSS] Falling back after SMTP connection failure. "
-                f"=== VERIFICATION CODE ({purpose}) for {to_email}: {otp} ==="
-            )
-            return
+        logger.error(f"Failed to send OTP email to {to_email}: {e}")
         raise
-

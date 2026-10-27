@@ -78,15 +78,11 @@ services:
     # Prepaid credit wallet config (Phases 3–8). The base compose file doesn't
     # pass these through, so inject them here.
     environment:
-      # Email service credentials for OTP (SMTP, Resend HTTP API, SendGrid API)
+      # Gmail SMTP for OTP emails (signup verification + forgot password)
       SMTP_HOST: "${SMTP_HOST:-smtp.gmail.com}"
       SMTP_PORT: "${SMTP_PORT:-587}"
-      SMTP_FROM_EMAIL: "${SMTP_FROM_EMAIL:-}"
-      SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
-      RESEND_API_KEY: "${RESEND_API_KEY:-}"
-      RESEND_FROM_EMAIL: "${RESEND_FROM_EMAIL:-}"
-      SENDGRID_API_KEY: "${SENDGRID_API_KEY:-}"
-      SENDGRID_FROM_EMAIL: "${SENDGRID_FROM_EMAIL:-}"
+      SMTP_FROM_EMAIL: "${SMTP_FROM_EMAIL}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD}"
       # Shared secret for the internal credits API. Without it, every
       # /internal/credits route returns 503 ("Internal API is not configured").
       DOGRAH_INTERNAL_SECRET: "${DOGRAH_INTERNAL_SECRET:-}"
@@ -128,12 +124,8 @@ services:
     environment:
       SMTP_HOST: "${SMTP_HOST:-smtp.gmail.com}"
       SMTP_PORT: "${SMTP_PORT:-587}"
-      SMTP_FROM_EMAIL: "${SMTP_FROM_EMAIL:-}"
-      SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
-      RESEND_API_KEY: "${RESEND_API_KEY:-}"
-      RESEND_FROM_EMAIL: "${RESEND_FROM_EMAIL:-}"
-      SENDGRID_API_KEY: "${SENDGRID_API_KEY:-}"
-      SENDGRID_FROM_EMAIL: "${SENDGRID_FROM_EMAIL:-}"
+      SMTP_FROM_EMAIL: "${SMTP_FROM_EMAIL}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD}"
       # Same as api: skip runtime Cloudflare-tunnel discovery for local dev.
       BACKEND_API_ENDPOINT: "${BACKEND_API_ENDPOINT:-http://host.docker.internal:3000}"
 
