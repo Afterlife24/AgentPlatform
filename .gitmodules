@@ -1,3 +1,4 @@
 [submodule "pipecat"]
 	path = pipecat
-	url = https://github.com/dograh-hq/pipecat.git
+	url = https://github.com/Afterlife24/pipecat.git
+	branch = main
