@@ -4,7 +4,7 @@ Dynamic model pricing (Stage A): versioned per-model pricing, per-provider
 enable/disable, the sync approval queue, and the immutable usage audit log.
 
 Revision ID: price001
-Revises: 2a5fcf617481
+Revises: mrg001_otp_wallet
 Create Date: 2026-10-17
 
 """
@@ -16,7 +16,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "price001"
-down_revision: Union[str, None] = "2a5fcf617481"
+down_revision: Union[str, None] = "mrg001_otp_wallet"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
