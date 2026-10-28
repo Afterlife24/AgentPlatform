@@ -36,6 +36,7 @@ from api.services.configuration.masking import (
 )
 from api.services.configuration.merge import merge_workflow_configuration_secrets
 from api.services.configuration.resolve import (
+    _inject_env_api_keys,
     enrich_overrides_with_api_keys,
     resolve_effective_config,
 )
@@ -1089,6 +1090,9 @@ async def update_workflow(
                     )
                 check_for_masked_keys_in_ai_model_configuration_v2(v2_override)
                 effective = compile_ai_model_configuration_v2(v2_override)
+                # Validate against platform (env) keys on a copy; stored
+                # override stays keyless (Section 1).
+                effective = _inject_env_api_keys(effective.model_copy(deep=True))
                 await UserConfigurationValidator().validate(
                     effective,
                     organization_id=user.selected_organization_id,
@@ -1138,13 +1142,17 @@ async def update_workflow(
                 if resolved_config.source == "organization_v2":
                     v2_override = convert_legacy_ai_model_configuration_to_v2(effective)
                     await UserConfigurationValidator().validate(
-                        compile_ai_model_configuration_v2(v2_override),
+                        _inject_env_api_keys(
+                            compile_ai_model_configuration_v2(v2_override).model_copy(
+                                deep=True
+                            )
+                        ),
                         organization_id=user.selected_organization_id,
                         created_by=user.provider_id,
                     )
                 else:
                     await UserConfigurationValidator().validate(
-                        effective,
+                        _inject_env_api_keys(effective.model_copy(deep=True)),
                         organization_id=user.selected_organization_id,
                         created_by=user.provider_id,
                     )
