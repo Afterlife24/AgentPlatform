@@ -197,6 +197,17 @@ class UserConfigurationValidator:
                 ]
 
         api_key = service_config.api_key
+        if not api_key:
+            # No stored key and no platform (env) key for this provider.
+            return [
+                {
+                    "model": service_name,
+                    "message": (
+                        f"API key is missing for {getattr(provider, 'value', provider)}. "
+                        f"No platform key is configured for this provider."
+                    ),
+                }
+            ]
 
         try:
             if not self._check_api_key(provider, api_key, service_config):
