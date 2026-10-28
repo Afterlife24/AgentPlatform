@@ -105,3 +105,36 @@ def set_person_properties(distinct_id: str, properties: dict[str, Any]) -> None:
         client.set(distinct_id=distinct_id, properties=properties)
     except Exception:
         logger.exception("Failed to set PostHog person properties")
+
+
+def capture_text_chat_lifecycle_event(
+    *,
+    event: str,
+    distinct_id: str | None,
+    workflow_run_id: int,
+    workflow_id: int | None,
+    call_direction: str | None = None,
+    extra_properties: dict[str, Any] | None = None,
+) -> None:
+    """Fire a call-lifecycle PostHog event for a text chat run.
+
+    Text chat has no voice pipeline, so the voice path's CALL_STARTED /
+    CALL_COMPLETED never fire for it. This mirrors that event shape (same event
+    names, same property keys) so text chats appear in the same PostHog activity
+    views as calls, distinguished by ``call_type == "textchat"``. Never raises.
+    """
+    if not distinct_id:
+        # PostHog requires a distinct_id; skip rather than send an anonymous one.
+        return
+    try:
+        properties: dict[str, Any] = {
+            "workflow_run_id": workflow_run_id,
+            "workflow_id": workflow_id,
+            "call_type": "textchat",
+            "call_direction": call_direction or "inbound",
+        }
+        if extra_properties:
+            properties.update(extra_properties)
+        capture_event(distinct_id=distinct_id, event=event, properties=properties)
+    except Exception:
+        logger.exception(f"Failed to capture text chat lifecycle event '{event}'")

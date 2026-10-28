@@ -814,6 +814,19 @@ def create_llm_service_from_provider(
             api_key=api_key,
             settings=GroqLLMSettings(model=model, temperature=0.1),
         )
+    elif provider == ServiceProviders.ANTHROPIC.value:
+        # Imported lazily: the Anthropic adapter needs the optional `anthropic`
+        # SDK, which may not be installed. Importing at module top would break
+        # app startup for everyone; here it only loads when Claude is used.
+        from pipecat.services.anthropic.llm import (
+            AnthropicLLMService,
+            AnthropicLLMSettings,
+        )
+
+        return AnthropicLLMService(
+            api_key=api_key,
+            settings=AnthropicLLMSettings(model=model, temperature=0.1),
+        )
     elif provider == ServiceProviders.OPENROUTER.value:
         kwargs = {}
         if base_url:
