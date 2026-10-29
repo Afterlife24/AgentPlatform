@@ -125,7 +125,10 @@ class BaseServiceConfiguration(BaseModel):
         ServiceProviders.SARVAM,
         ServiceProviders.SMALLEST,
     ]
-    api_key: str | list[str]
+    # Optional: end users no longer enter keys in the UI (Section 1). Platform
+    # keys are injected from env at validate/resolve time; providers without an
+    # env key must still supply one (the validator reports it as missing).
+    api_key: str | list[str] | None = None
 
     @field_validator("api_key")
     @classmethod

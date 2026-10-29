@@ -188,6 +188,8 @@ services:
       DASHBOARD_ORIGIN: "http://localhost:3001"
       # CORS — comma-separated list of allowed origins
       ADAPTER_CORS_ORIGINS: "${ADAPTER_CORS_ORIGINS:-http://localhost:3000,http://localhost:3001,http://localhost:3010}"
+      # Mark the session cookie Secure when served over HTTPS (production).
+      ADAPTER_COOKIE_SECURE: "${ADAPTER_COOKIE_SECURE:-}"
       # Phase 6: operator billing console → AgentX internal credits API.
       # The adapter forwards this secret to AgentX; it is NEVER sent to the
       # dashboard (browser) service. Formal compose wiring is Phase 8, added

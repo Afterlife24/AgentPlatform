@@ -33,6 +33,12 @@ jobs:
           git checkout main
           git reset --hard origin/main
 
+          # The api image installs pipecat from the submodule checkout, so sync
+          # the submodule URL (it moved to Afterlife24/pipecat) and check out
+          # the pinned commit. `reset --hard` alone leaves the old commit.
+          git submodule sync --recursive
+          git submodule update --init --recursive
+
           # Also pull latest WhatsApp Adapter code (sibling repo)
           if [ -d /home/ubuntu/Whatsapp_Adapter ]; then
             cd /home/ubuntu/Whatsapp_Adapter

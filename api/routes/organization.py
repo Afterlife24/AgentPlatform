@@ -65,6 +65,7 @@ from api.services.configuration.ai_model_configuration import (
 from api.services.configuration.check_validity import UserConfigurationValidator
 from api.services.configuration.defaults import DEFAULT_SERVICE_PROVIDERS
 from api.services.configuration.masking import is_mask_of, mask_key, mask_user_config
+from api.services.configuration.resolve import _inject_env_api_keys
 from api.services.configuration.registry import (
     DOGRAH_MULTILINGUAL_AUTODETECT_LANGUAGES,
     DOGRAH_STT_LANGUAGES,
@@ -477,6 +478,10 @@ async def save_model_configuration_v2(
     try:
         check_for_masked_keys_in_ai_model_configuration_v2(configuration)
         effective = compile_ai_model_configuration_v2(configuration)
+        # Validate with the platform (env) keys, not the stored config. Keys no
+        # longer come from the UI (Section 1), so inject them onto a deep copy —
+        # the original keyless `configuration` is what we persist to the DB.
+        effective = _inject_env_api_keys(effective.model_copy(deep=True))
         await UserConfigurationValidator().validate(
             effective,
             organization_id=organization_id,
@@ -532,6 +537,9 @@ async def migrate_model_configuration_v2(
     try:
         configuration = convert_legacy_ai_model_configuration_to_v2(legacy)
         effective = compile_ai_model_configuration_v2(configuration)
+        # Inject platform (env) keys on a copy before validating (Section 1);
+        # the stored configuration stays keyless.
+        effective = _inject_env_api_keys(effective.model_copy(deep=True))
         await UserConfigurationValidator().validate(
             effective,
             organization_id=organization_id,
