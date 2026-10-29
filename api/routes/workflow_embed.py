@@ -6,19 +6,23 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from api.constants import BACKEND_API_ENDPOINT, ENVIRONMENT, UI_APP_URL
 from api.db import db_client
 from api.db.models import EmbedTokenModel, UserModel
 from api.enums import PostHogEvent
 from api.services.auth.depends import get_user
+from api.services.embed_public_urls import resolve_embed_public_urls
 from api.services.posthog_client import capture_event
 
 router = APIRouter(prefix="/workflow")
 
 
-def generate_embed_script(token: EmbedTokenModel) -> str:
-    """Generate the voice embed script for a given token."""
-    base_url = str(UI_APP_URL).rstrip("/")
+def generate_embed_script(token: EmbedTokenModel, request: Request) -> str:
+    """Generate the voice embed script for a given token.
+
+    URLs are resolved per request so the snippet points at the public domain
+    the platform is served from, not a localhost/docker-internal default.
+    """
+    base_url, api_endpoint = resolve_embed_public_urls(request)
 
     return f"""<!-- Dograh Voice Widget -->
 <script>
@@ -26,16 +30,16 @@ def generate_embed_script(token: EmbedTokenModel) -> str:
     var js, fjs = d.getElementsByTagName(s)[0];
     if (d.getElementById(id)) return;
     js = d.createElement(s); js.id = id;
-    js.src = '{base_url}/embed/dograh-widget.js?token={token.token}&environment={ENVIRONMENT}&apiEndpoint={BACKEND_API_ENDPOINT}';
+    js.src = '{base_url}/embed/dograh-widget.js?token={token.token}&apiEndpoint={api_endpoint}';
     js.async = true;
     fjs.parentNode.insertBefore(js, fjs);
   }}(document, 'script', 'dograh-widget'));
 </script>"""
 
 
-def generate_chat_embed_script(token: EmbedTokenModel) -> str:
-    """Generate the chat embed script for a given token."""
-    base_url = str(UI_APP_URL).rstrip("/")
+def generate_chat_embed_script(token: EmbedTokenModel, request: Request) -> str:
+    """Generate the chat embed script for a given token (URLs resolved per request)."""
+    base_url, api_endpoint = resolve_embed_public_urls(request)
 
     return f"""<!-- AgentX Chat Widget -->
 <script>
@@ -43,7 +47,7 @@ def generate_chat_embed_script(token: EmbedTokenModel) -> str:
     var js, fjs = d.getElementsByTagName(s)[0];
     if (d.getElementById(id)) return;
     js = d.createElement(s); js.id = id;
-    js.src = '{base_url}/embed/agentx-chat-widget.js?token={token.token}&environment={ENVIRONMENT}&apiEndpoint={BACKEND_API_ENDPOINT}';
+    js.src = '{base_url}/embed/agentx-chat-widget.js?token={token.token}&apiEndpoint={api_endpoint}';
     js.async = true;
     fjs.parentNode.insertBefore(js, fjs);
   }}(document, 'script', 'agentx-chat-widget'));
@@ -170,8 +174,8 @@ async def create_or_update_embed_token(
     )
 
     # Generate embed scripts
-    embed_script = generate_embed_script(token)
-    chat_embed_script = generate_chat_embed_script(token)
+    embed_script = generate_embed_script(token, request)
+    chat_embed_script = generate_chat_embed_script(token, request)
 
     v_on = (token.settings or {}).get("voiceEnabled", (token.settings or {}).get("voice_enabled", token.is_active))
     c_on = (token.settings or {}).get("chatEnabled", (token.settings or {}).get("chat_enabled", token.is_active))
@@ -222,8 +226,8 @@ async def get_embed_token(
     token = tokens[0]  # Return the workflow's embed token
 
     # Generate embed scripts
-    embed_script = generate_embed_script(token)
-    chat_embed_script = generate_chat_embed_script(token)
+    embed_script = generate_embed_script(token, request)
+    chat_embed_script = generate_chat_embed_script(token, request)
 
     v_on = (token.settings or {}).get("voiceEnabled", (token.settings or {}).get("voice_enabled", token.is_active))
     c_on = (token.settings or {}).get("chatEnabled", (token.settings or {}).get("chat_enabled", token.is_active))
@@ -248,6 +252,7 @@ async def get_embed_token(
 @router.patch("/{workflow_id}/embed-token/toggle")
 async def toggle_embed_token(
     workflow_id: int,
+    request: Request,
     toggle_request: ToggleEmbedTokenRequest,
     user: UserModel = Depends(get_user),
 ) -> EmbedTokenResponse:
@@ -310,8 +315,8 @@ async def toggle_embed_token(
         is_active=new_is_active,
     )
 
-    embed_script = generate_embed_script(token)
-    chat_embed_script = generate_chat_embed_script(token)
+    embed_script = generate_embed_script(token, request)
+    chat_embed_script = generate_chat_embed_script(token, request)
 
     v_on = (token.settings or {}).get("voiceEnabled", (token.settings or {}).get("voice_enabled", token.is_active))
     c_on = (token.settings or {}).get("chatEnabled", (token.settings or {}).get("chat_enabled", token.is_active))

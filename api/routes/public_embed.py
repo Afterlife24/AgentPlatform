@@ -103,10 +103,20 @@ class EmbedChatTeardownResponse(BaseModel):
 
 
 def validate_origin(origin: str, allowed_domains: list) -> bool:
-    """Validate if the origin is in the allowed domains list.
+    """Validate if the origin is in the allowed domains list (strict).
+
+    Rules:
+    - Empty allowed_domains (or a "*" entry) allows every origin.
+    - Otherwise the request MUST carry an Origin/Referer that matches an entry;
+      a missing or unparseable origin is rejected.
+    - An entry with a port (``localhost:3002``) matches only that exact port.
+      An entry without a port (``example.com``) matches that host on any port.
+    - ``*.example.com`` matches example.com and its subdomains; ``www.`` and
+      the bare domain are treated as equivalent.
+    - No special-casing of localhost: local origins follow the same rules.
 
     Args:
-        origin: The origin header from the request
+        origin: The Origin (or Referer) header from the request
         allowed_domains: List of allowed domain patterns
 
     Returns:
@@ -116,9 +126,13 @@ def validate_origin(origin: str, allowed_domains: list) -> bool:
         # If no domains specified, allow all origins
         return True
 
-    domain, origin_port = _parse_origin_host_port(origin)
-    if not domain:
+    if any(str(allowed).strip() == "*" for allowed in allowed_domains):
         return True
+
+    domain, origin_port = _parse_origin_host_port(origin or "")
+    if not domain:
+        # Allowlist is set but the caller didn't identify its site: reject.
+        return False
 
     # Normalize domain for www matching
     def normalize_www(d: str) -> tuple[str, str]:
@@ -129,21 +143,14 @@ def validate_origin(origin: str, allowed_domains: list) -> bool:
             return (d, f"www.{d}")  # (x.com, www.x.com)
 
     domain_variants = normalize_www(domain)
-    is_origin_local = domain in ("localhost", "127.0.0.1", "0.0.0.0")
 
     for allowed in allowed_domains:
         allowed = str(allowed).strip().lower()
-        if allowed == "*":
-            return True
         allowed_domain, allowed_port = _parse_origin_host_port(allowed)
         if not allowed_domain:
             continue
 
-        # In local development, if both origin and allowed are localhost/127.0.0.1, allow across ports
-        is_allowed_local = allowed_domain in ("localhost", "127.0.0.1", "0.0.0.0")
-        if is_origin_local and is_allowed_local:
-            return True
-
+        # A port on the allowlist entry must match the origin's port exactly.
         if allowed_port is not None and allowed_port != origin_port:
             continue
 

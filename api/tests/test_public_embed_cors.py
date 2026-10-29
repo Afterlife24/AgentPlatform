@@ -25,6 +25,7 @@ _ACTIVE_TOKEN = SimpleNamespace(
     expires_at=None,
     allowed_domains=[],
     workflow_id=1,
+    organization_id=1,
     created_by=7,
     usage_limit=None,
     usage_count=0,
@@ -37,6 +38,7 @@ _RESTRICTED_TOKEN = SimpleNamespace(
     expires_at=None,
     allowed_domains=["allowed.example.com"],
     workflow_id=2,
+    organization_id=1,
     created_by=7,
     usage_limit=None,
     usage_count=0,
@@ -49,6 +51,7 @@ _LOCALHOST_TOKEN = SimpleNamespace(
     expires_at=None,
     allowed_domains=["localhost:3000", "localhost:3020"],
     workflow_id=3,
+    organization_id=1,
     created_by=7,
     usage_limit=None,
     usage_count=0,
@@ -86,6 +89,9 @@ def _patch_db(monkeypatch):
     async def _create_workflow_run(**_kwargs):
         return SimpleNamespace(id=123)
 
+    async def _get_workflow(_workflow_id, organization_id=None):
+        return SimpleNamespace(name="Test Workflow", organization_id=organization_id)
+
     async def _noop(*_args, **_kwargs):
         return None
 
@@ -104,6 +110,10 @@ def _patch_db(monkeypatch):
     monkeypatch.setattr(
         "api.routes.public_embed.db_client.create_workflow_run",
         _create_workflow_run,
+    )
+    monkeypatch.setattr(
+        "api.routes.public_embed.db_client.get_workflow",
+        _get_workflow,
     )
     monkeypatch.setattr(
         "api.routes.public_embed.db_client.create_embed_session",
@@ -272,3 +282,73 @@ def test_options_turn_credentials_rejects_disallowed_origin():
         },
     )
     assert resp.status_code == 403
+
+
+# --- Strict allowed-domain enforcement -------------------------------------
+
+
+def test_get_config_rejects_missing_origin_when_allowlist_set():
+    # No Origin/Referer: the caller didn't identify its site, so a restricted
+    # token must refuse instead of silently allowing it.
+    resp = client.get("/api/v1/public/embed/config/restricted")
+    assert resp.status_code == 403
+
+
+def test_init_rejects_missing_origin_when_allowlist_set():
+    resp = client.post("/api/v1/public/embed/init", json={"token": "restricted"})
+    assert resp.status_code == 403
+
+
+def test_get_config_allows_missing_origin_when_allowlist_empty():
+    # Empty allowlist still means "allow all domains".
+    resp = client.get("/api/v1/public/embed/config/valid")
+    assert resp.status_code == 200
+
+
+def test_get_config_uses_referer_when_origin_absent():
+    resp = client.get(
+        "/api/v1/public/embed/config/localhost",
+        headers={"Referer": "http://localhost:3000/pricing"},
+    )
+    assert resp.status_code == 200
+
+
+def test_get_config_rejects_unlisted_localhost_port_via_referer():
+    resp = client.get(
+        "/api/v1/public/embed/config/localhost",
+        headers={"Referer": "http://localhost:5173/"},
+    )
+    assert resp.status_code == 403
+
+
+def test_get_config_rejects_other_local_host_alias():
+    # 127.0.0.1 is not the same entry as localhost: no implicit local bypass.
+    resp = client.get(
+        "/api/v1/public/embed/config/localhost",
+        headers={"Origin": "http://127.0.0.1:3000"},
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("origin", "allowed", "expected"),
+    [
+        ("https://allowed.example.com", ["allowed.example.com"], True),
+        ("https://www.allowed.example.com", ["allowed.example.com"], True),
+        ("https://allowed.example.com:8443", ["allowed.example.com"], True),
+        ("https://allowed.example.com:8443", ["allowed.example.com:9443"], False),
+        ("https://shop.example.com", ["*.example.com"], True),
+        ("https://example.com.evil.io", ["example.com"], False),
+        ("https://evil-example.com", ["*.example.com"], False),
+        ("http://localhost:3002", ["localhost:5173", "localhost:3002"], True),
+        ("http://localhost:4000", ["localhost:5173", "localhost:3002"], False),
+        ("", ["example.com"], False),
+        ("null", ["example.com"], False),
+        ("", [], True),
+        ("https://anything.io", ["*"], True),
+    ],
+)
+def test_validate_origin_rules(origin, allowed, expected):
+    from api.routes.public_embed import validate_origin
+
+    assert validate_origin(origin, allowed) is expected
