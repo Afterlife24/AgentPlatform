@@ -85,6 +85,20 @@ services:
       # Shared secret for the internal credits API. Without it, every
       # /internal/credits route returns 503 ("Internal API is not configured").
       DOGRAH_INTERNAL_SECRET: "${DOGRAH_INTERNAL_SECRET:-}"
+      # Local dev: pin the public endpoint so the backend does NOT try to
+      # discover a Cloudflare tunnel at runtime. The cloudflared service is
+      # behind the "tunnel" profile and isn't running locally, so every call to
+      # get_backend_endpoints() (including the UI's /health probe) would block
+      # ~5s on http://cloudflared:2000/metrics and blow past the UI's 3000ms
+      # health-check timeout — surfacing as "Backend connection failed" in the
+      # browser. A hostname value (not localhost / not a bare IP) is treated as
+      # publicly reachable by is_local_or_private_url(), so the tunnel lookup is
+      # skipped and /health returns immediately. host.docker.internal:3000 is the
+      # nginx-local proxy as seen from the host; it's only used to build
+      # webhook/embed links, which aren't exercised in local testing.
+      # In production, PUBLIC_BASE_URL (e.g. https://agentx.example.com) wins
+      # over the local default so webhook/embed links use the real domain.
+      BACKEND_API_ENDPOINT: "${BACKEND_API_ENDPOINT:-${PUBLIC_BASE_URL:-http://host.docker.internal:3000}}"
       # Master switch for refusing runs on an empty/blocked wallet (Phase 5).
       # Defaults to false so the feature deploys and balances seed before any
       # customer is refused — flipping this to true is the go-live moment (8.5).
@@ -110,6 +124,9 @@ services:
       SMTP_PORT: "${SMTP_PORT:-587}"
       SMTP_FROM_EMAIL: "${SMTP_FROM_EMAIL}"
       SMTP_PASSWORD: "${SMTP_PASSWORD}"
+      # Same as api: skip runtime Cloudflare-tunnel discovery for local dev;
+      # PUBLIC_BASE_URL wins in production.
+      BACKEND_API_ENDPOINT: "${BACKEND_API_ENDPOINT:-${PUBLIC_BASE_URL:-http://host.docker.internal:3000}}"
 
   # NEXT_PUBLIC_BACKEND_URL is baked into the Next.js build at build time (it's
   # a NEXT_PUBLIC_ var, inlined into the browser JS bundle) — it can't be
@@ -125,7 +142,7 @@ services:
       context: .
       dockerfile: ui/Dockerfile
       args:
-        - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:3000}
+        - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-${PUBLIC_BASE_URL:-http://localhost:3000}}
       # Cap build-time memory so the Next.js compile doesn't OOM
       shm_size: "256m"
     image: dograh-local/dograh-ui:local
@@ -136,7 +153,7 @@ services:
         limits:
           memory: 4g
     environment:
-      NEXT_PUBLIC_BACKEND_URL: "${NEXT_PUBLIC_BACKEND_URL:-http://localhost:3000}"
+      NEXT_PUBLIC_BACKEND_URL: "${NEXT_PUBLIC_BACKEND_URL:-${PUBLIC_BASE_URL:-http://localhost:3000}}"
 
   # WhatsApp adapter — Twilio WhatsApp webhooks routed via nginx at /whatsapp
   #

@@ -2426,6 +2426,18 @@ export type EmbedTokenRequest = {
      * Expires In Days
      */
     expires_in_days?: number | null;
+    /**
+     * Is Active
+     */
+    is_active?: boolean | null;
+    /**
+     * Voice Enabled
+     */
+    voice_enabled?: boolean | null;
+    /**
+     * Chat Enabled
+     */
+    chat_enabled?: boolean | null;
 };
 
 /**
@@ -2455,6 +2467,14 @@ export type EmbedTokenResponse = {
      */
     is_active: boolean;
     /**
+     * Voice Enabled
+     */
+    voice_enabled?: boolean | null;
+    /**
+     * Chat Enabled
+     */
+    chat_enabled?: boolean | null;
+    /**
      * Usage Count
      */
     usage_count: number;
@@ -2474,6 +2494,10 @@ export type EmbedTokenResponse = {
      * Embed Script
      */
     embed_script: string;
+    /**
+     * Chat Embed Script
+     */
+    chat_embed_script?: string | null;
 };
 
 /**

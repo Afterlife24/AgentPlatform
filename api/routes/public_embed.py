@@ -53,6 +53,7 @@ class EmbedConfigResponse(BaseModel):
     """Response model for embed configuration"""
 
     workflow_id: int
+    workflow_name: Optional[str] = None
     settings: dict
     theme: str
     position: str
@@ -60,13 +61,62 @@ class EmbedConfigResponse(BaseModel):
     button_color: str
     size: str
     auto_start: bool
+    chat_position: Optional[str] = None
+    chat_button_text: Optional[str] = None
+    chat_button_color: Optional[str] = None
+    chat_title: Optional[str] = None
+    voice_enabled: bool = True
+    chat_enabled: bool = True
+
+
+class EmbedChatMessageRequest(BaseModel):
+    """Request model for sending a chat message from an embedded widget"""
+
+    token: str
+    session_key: str
+    text: str
+    initial_context: Optional[dict] = None
+
+
+class EmbedChatMessageResponse(BaseModel):
+    """Response model for embedded chat message"""
+
+    session_key: str
+    assistant_text: Optional[str] = None
+    is_completed: bool = False
+    workflow_run_id: int
+
+
+class EmbedChatTeardownRequest(BaseModel):
+    """Request model for tearing down an embedded chat session"""
+
+    token: str
+    session_key: str
+
+
+class EmbedChatTeardownResponse(BaseModel):
+    """Response model for chat session teardown"""
+
+    status: str
+    session_key: str
+    message: str
 
 
 def validate_origin(origin: str, allowed_domains: list) -> bool:
-    """Validate if the origin is in the allowed domains list.
+    """Validate if the origin is in the allowed domains list (strict).
+
+    Rules:
+    - Empty allowed_domains (or a "*" entry) allows every origin.
+    - Otherwise the request MUST carry an Origin/Referer that matches an entry;
+      a missing or unparseable origin is rejected.
+    - An entry with a port (``localhost:3002``) matches only that exact port.
+      An entry without a port (``example.com``) matches that host on any port.
+    - ``*.example.com`` matches example.com and its subdomains; ``www.`` and
+      the bare domain are treated as equivalent.
+    - No special-casing of localhost: local origins follow the same rules.
 
     Args:
-        origin: The origin header from the request
+        origin: The Origin (or Referer) header from the request
         allowed_domains: List of allowed domain patterns
 
     Returns:
@@ -76,8 +126,12 @@ def validate_origin(origin: str, allowed_domains: list) -> bool:
         # If no domains specified, allow all origins
         return True
 
-    domain, origin_port = _parse_origin_host_port(origin)
+    if any(str(allowed).strip() == "*" for allowed in allowed_domains):
+        return True
+
+    domain, origin_port = _parse_origin_host_port(origin or "")
     if not domain:
+        # Allowlist is set but the caller didn't identify its site: reject.
         return False
 
     # Normalize domain for www matching
@@ -92,11 +146,11 @@ def validate_origin(origin: str, allowed_domains: list) -> bool:
 
     for allowed in allowed_domains:
         allowed = str(allowed).strip().lower()
-        if allowed == "*":
-            return True
         allowed_domain, allowed_port = _parse_origin_host_port(allowed)
         if not allowed_domain:
             continue
+
+        # A port on the allowlist entry must match the origin's port exactly.
         if allowed_port is not None and allowed_port != origin_port:
             continue
 
@@ -230,6 +284,12 @@ async def build_public_embed_preflight_response(
         session_token = path[len(turn_credentials_prefix) :].split("/", 1)[0]
         return await _turn_credentials_preflight_response(session_token, origin)
 
+    chat_prefix = f"{public_embed_prefix}/chat/"
+    if path.startswith(chat_prefix):
+        if requested_method.upper() not in ("POST", "OPTIONS"):
+            return Response(status_code=405)
+        return _cors_response(origin, "POST, OPTIONS")
+
     return None
 
 
@@ -284,6 +344,11 @@ async def initialize_embed_session(
     if not embed_token.is_active:
         raise HTTPException(status_code=403, detail="Embed token is inactive")
 
+    settings = dict(embed_token.settings or {})
+    voice_enabled = settings.get("voiceEnabled", settings.get("voice_enabled", True))
+    if not voice_enabled:
+        raise HTTPException(status_code=403, detail="Voice widget is disabled")
+
     # Check expiration
     if embed_token.expires_at and embed_token.expires_at < datetime.now(UTC):
         raise HTTPException(status_code=403, detail="Embed token has expired")
@@ -313,6 +378,7 @@ async def initialize_embed_session(
                 **(init_request.context_variables or {}),
                 "provider": WorkflowRunMode.SMALLWEBRTC.value,
             },
+            organization_id=embed_token.organization_id,
         )
     except Exception as e:
         logger.error(f"Failed to create workflow run: {e}")
@@ -363,7 +429,12 @@ async def options_embed_config(token: str, request: Request):
 
 
 @router.get("/config/{token}", response_model=EmbedConfigResponse)
-async def get_embed_config(token: str, request: Request, response: Response):
+async def get_embed_config(
+    token: str,
+    request: Request,
+    response: Response,
+    widget_type: Optional[str] = None,
+):
     """Get embed configuration without creating a session.
 
     This endpoint is used to fetch widget configuration for display purposes
@@ -390,17 +461,55 @@ async def get_embed_config(token: str, request: Request, response: Response):
         _allow_embed_origin(response, origin)
 
     # Extract settings with defaults
-    settings = embed_token.settings or {}
+    settings = dict(embed_token.settings or {})
+    voice_enabled = settings.get("voiceEnabled", settings.get("voice_enabled", True))
+    chat_enabled = settings.get("chatEnabled", settings.get("chat_enabled", True))
+
+    # Granular widget check if specified
+    if widget_type == "voice" and not voice_enabled:
+        raise HTTPException(status_code=403, detail="Voice widget is inactive")
+    if widget_type == "chat" and not chat_enabled:
+        raise HTTPException(status_code=403, detail="Chat widget is inactive")
+
+    # Voice widget settings (consumed by dograh-widget.js)
+    voice_position = settings.get("voicePosition") or settings.get("position", "bottom-right")
+    voice_button_text = settings.get("voiceButtonText") or settings.get("buttonText", "Talk to Agent")
+    voice_button_color = settings.get("voiceButtonColor") or settings.get("buttonColor", "#10b981")
+
+    workflow = await db_client.get_workflow(
+        embed_token.workflow_id, organization_id=embed_token.organization_id
+    )
+    workflow_name = workflow.name if workflow else None
+
+    # Chat widget settings (consumed by agentx-chat-widget.js)
+    chat_position = settings.get("chatPosition", "bottom-right")
+    raw_chat_button_text = settings.get("chatButtonText")
+    chat_button_text = (
+        "Chat with Agent"
+        if not raw_chat_button_text or raw_chat_button_text.strip().lower() in ("chat with us", "chat with agent")
+        else raw_chat_button_text
+    )
+    settings["chatButtonText"] = chat_button_text
+    chat_button_color = settings.get("chatButtonColor", "#2563eb")
+    chat_title = settings.get("chatTitle") or workflow_name or "Chat Agent"
+    settings["chatTitle"] = chat_title
 
     return EmbedConfigResponse(
         workflow_id=embed_token.workflow_id,
+        workflow_name=workflow_name,
         settings=settings,
         theme=settings.get("theme", "light"),
-        position=settings.get("position", "bottom-right"),
-        button_text=settings.get("buttonText", "Start Voice Call"),
-        button_color=settings.get("buttonColor", "#3B82F6"),
+        position=voice_position,
+        button_text=voice_button_text,
+        button_color=voice_button_color,
         size=settings.get("size", "medium"),
         auto_start=settings.get("autoStart", False),
+        chat_position=chat_position,
+        chat_button_text=chat_button_text,
+        chat_button_color=chat_button_color,
+        chat_title=chat_title,
+        voice_enabled=bool(voice_enabled),
+        chat_enabled=bool(chat_enabled),
     )
 
 
@@ -482,4 +591,126 @@ async def options_turn_credentials(request: Request, session_token: str):
     # Browser preflights are handled by PublicEmbedCORSMiddleware before global CORS.
     return await _turn_credentials_preflight_response(
         session_token, request.headers.get("origin", "")
+    )
+
+
+@router.options("/chat/message")
+async def options_chat_message(request: Request):
+    origin = request.headers.get("origin", "*")
+    return _cors_response(origin, "POST, OPTIONS")
+
+
+@router.post("/chat/message", response_model=EmbedChatMessageResponse)
+async def send_embed_chat_message(
+    request: Request, chat_request: EmbedChatMessageRequest, response: Response
+):
+    """Send a text chat message from an embedded web widget.
+
+    Validates the embed token and domain whitelist, resolves the workflow,
+    executes the assistant turn in the text session, and returns the response.
+    """
+    origin = get_request_origin(request)
+
+    embed_token = await db_client.get_embed_token_by_token(chat_request.token)
+    if not embed_token:
+        raise HTTPException(status_code=404, detail="Invalid embed token")
+    if not embed_token.is_active:
+        raise HTTPException(status_code=403, detail="Embed token is inactive")
+
+    settings = dict(embed_token.settings or {})
+    chat_enabled = settings.get("chatEnabled", settings.get("chat_enabled", True))
+    if not chat_enabled:
+        raise HTTPException(status_code=403, detail="Chat widget is disabled")
+
+    if embed_token.expires_at and embed_token.expires_at < datetime.now(UTC):
+        raise HTTPException(status_code=403, detail="Embed token has expired")
+
+    if not validate_origin(origin, embed_token.allowed_domains or []):
+        raise HTTPException(status_code=403, detail=f"Domain not allowed: {origin}")
+
+    if origin:
+        _allow_embed_origin(response, origin)
+
+    workflow = await db_client.get_workflow(
+        embed_token.workflow_id, organization_id=embed_token.organization_id
+    )
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    from api.routes.public_text_chat import (
+        PublicTextChatMessageRequest,
+        _handle_message,
+    )
+
+    has_draft = bool(await db_client.get_workflow_draft(workflow.id))
+    use_draft = has_draft or not bool(workflow.released_definition_id)
+
+    res = await _handle_message(
+        workflow=workflow,
+        organization_id=embed_token.organization_id,
+        request=PublicTextChatMessageRequest(
+            session_key=chat_request.session_key,
+            text=chat_request.text,
+            initial_context=chat_request.initial_context,
+        ),
+        use_draft=use_draft,
+        api_key_id=None,
+    )
+
+    await db_client.increment_embed_token_usage(embed_token.id)
+
+    return EmbedChatMessageResponse(
+        session_key=res.session_key,
+        assistant_text=res.assistant_text,
+        is_completed=res.is_completed,
+        workflow_run_id=res.workflow_run_id,
+    )
+
+
+@router.options("/chat/teardown")
+async def options_chat_teardown(request: Request):
+    origin = request.headers.get("origin", "*")
+    return _cors_response(origin, "POST, OPTIONS")
+
+
+@router.post("/chat/teardown", response_model=EmbedChatTeardownResponse)
+async def teardown_embed_chat_session(
+    request: Request, teardown_request: EmbedChatTeardownRequest, response: Response
+):
+    """Teardown an embedded chat session on widget close.
+
+    Marks the active workflow run as completed, terminating server-side session context
+    and ensuring zero token/context bleed for future sessions.
+    """
+    origin = get_request_origin(request)
+
+    embed_token = await db_client.get_embed_token_by_token(teardown_request.token)
+    if not embed_token or not embed_token.is_active:
+        raise HTTPException(status_code=403, detail="Invalid or inactive embed token")
+
+    if not validate_origin(origin, embed_token.allowed_domains or []):
+        raise HTTPException(status_code=403, detail=f"Domain not allowed: {origin}")
+
+    if origin:
+        _allow_embed_origin(response, origin)
+
+    existing_run = await db_client.get_workflow_run_by_annotation(
+        workflow_id=embed_token.workflow_id,
+        organization_id=embed_token.organization_id,
+        annotation_key="public_text_chat",
+        annotation_value={"session_key": teardown_request.session_key},
+        mode=WorkflowRunMode.TEXTCHAT.value,
+        completed=False,
+    )
+
+    if existing_run:
+        await db_client.update_workflow_run(existing_run.id, is_completed=True)
+        logger.info(
+            f"Successfully tore down server-side text chat session for {teardown_request.session_key} (run_id={existing_run.id})"
+        )
+
+    return EmbedChatTeardownResponse(
+        status="teardown_complete",
+        session_key=teardown_request.session_key,
+        message="Session successfully terminated and server-side context cleared.",
     )

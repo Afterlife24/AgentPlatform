@@ -69,14 +69,21 @@
 
     // Determine API base URL
     let apiBaseUrl = DEFAULT_CONFIG.apiBaseUrl;
-    if (apiEndpoint) {
+    let resolvedEndpoint = apiEndpoint;
+    if (!resolvedEndpoint || resolvedEndpoint.includes('host.docker.internal')) {
+      resolvedEndpoint = (window.location && window.location.origin && window.location.origin.includes('localhost'))
+        ? 'http://localhost:3000'
+        : (resolvedEndpoint && !resolvedEndpoint.includes('host.docker.internal') ? resolvedEndpoint : (window.location ? window.location.origin : 'http://localhost:3000'));
+    }
+
+    if (resolvedEndpoint) {
       // Use the apiEndpoint from URL parameter if provided
       // Ensure it has a protocol
-      if (!apiEndpoint.startsWith('http://') && !apiEndpoint.startsWith('https://')) {
+      if (!resolvedEndpoint.startsWith('http://') && !resolvedEndpoint.startsWith('https://')) {
         // Default to https for production endpoints
-        apiBaseUrl = 'https://' + apiEndpoint.replace(/\/+$/, '');
+        apiBaseUrl = 'https://' + resolvedEndpoint.replace(/\/+$/, '');
       } else {
-        apiBaseUrl = apiEndpoint.replace(/\/+$/, ''); // Remove trailing slashes
+        apiBaseUrl = resolvedEndpoint.replace(/\/+$/, ''); // Remove trailing slashes
       }
     } else if (scriptUrl.origin.includes('localhost')) {
       apiBaseUrl = 'http://localhost:8000';
@@ -96,7 +103,7 @@
 
     try {
       // Fetch configuration from API
-      const configResponse = await fetch(`${state.config.apiBaseUrl}/api/v1/public/embed/config/${token}`, {
+      const configResponse = await fetch(`${state.config.apiBaseUrl}/api/v1/public/embed/config/${token}?widget_type=voice`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -109,6 +116,13 @@
       }
 
       const configData = await configResponse.json();
+
+      if (configData.voice_enabled === false || (configData.settings && (configData.settings.voiceEnabled === false || configData.settings.voice_enabled === false))) {
+        console.warn('Dograh Voice Widget: Voice widget is disabled. Widget will not be displayed.');
+        const existing = document.getElementById('dograh-widget-container') || document.querySelector('.dograh-widget-button');
+        if (existing) existing.remove();
+        return;
+      }
 
       // Merge fetched configuration with defaults
       state.config = {
@@ -123,7 +137,9 @@
         autoStart: configData.auto_start || false
       };
     } catch (error) {
-      console.error('Dograh Widget: Failed to fetch configuration', error);
+      console.warn('Dograh Voice Widget: Voice widget is disabled or inactive. Widget will not be displayed.', error);
+      const existing = document.getElementById('dograh-widget-container') || document.querySelector('.dograh-widget-button');
+      if (existing) existing.remove();
       return;
     }
 
@@ -268,6 +284,10 @@
     state.audioElement = audio;
 
     document.body.appendChild(container);
+    const chatWidget = document.getElementById('agentx-chat-widget-root');
+    if (chatWidget) {
+      chatWidget.classList.add('has-dograh-voice');
+    }
     renderFloating();
   }
 
