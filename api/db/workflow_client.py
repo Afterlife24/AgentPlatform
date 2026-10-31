@@ -297,6 +297,13 @@ class WorkflowClient(BaseDBClient):
             )
             return result.scalars().first()
 
+    async def get_workflow_draft(
+        self,
+        workflow_id: int,
+    ) -> WorkflowDefinitionModel | None:
+        """Alias for get_draft_version."""
+        return await self.get_draft_version(workflow_id)
+
     async def get_workflow_versions(
         self,
         workflow_id: int,

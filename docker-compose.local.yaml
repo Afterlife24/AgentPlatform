@@ -1,0 +1,49 @@
+# docker-compose.local.yaml
+# =============================================================================
+# LOCAL DEVELOPMENT ONLY. This file is NEVER used in production.
+#
+# WHY THIS FILE EXISTS:
+# docker-compose.override.yaml is auto-loaded by Compose and IS part of the
+# production deployment. Local-only conveniences (source bind mounts for live
+# reload, debug ports) must NOT live there, or they ship to the EC2 host and
+# break or weaken production.
+#
+# This file must be passed EXPLICITLY, so it can never leak into a deploy:
+#
+#   docker compose \
+#     -f docker-compose.yaml \
+#     -f docker-compose.override.yaml \
+#     -f docker-compose.local.yaml \
+#     up -d
+#
+# The production command does not reference this file at all:
+#   docker compose --profile remote up -d --build
+# =============================================================================
+
+services:
+  # Local-only MinIO permission relaxation on Windows Docker Desktop
+  minio:
+    user: root
+
+  # Live code reload for local development.
+  #
+  # WARNING: the first mount shadows /app/api inside the container, which HIDES
+  # the image's baked-in api/mcp_server/ts_validator/node_modules (installed by
+  # the ts-deps stage in api/Dockerfile). The second, anonymous volume
+  # re-exposes the image's copy so the MCP TypeScript validator keeps working.
+  # Do not remove the second line.
+  api:
+    volumes:
+      - ./api:/app/api
+      - /app/api/mcp_server/ts_validator/node_modules
+
+  arq-worker:
+    volumes:
+      - ./api:/app/api
+      - /app/api/mcp_server/ts_validator/node_modules
+
+  # Serve embed widget JS straight from the working tree so edits to
+  # agentx-chat-widget.js / dograh-widget.js appear without an image rebuild.
+  ui:
+    volumes:
+      - ./ui/public/embed:/app/public/embed:ro

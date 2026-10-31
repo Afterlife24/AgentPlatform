@@ -52,6 +52,20 @@ Port 3000 is the nginx proxy that correctly routes both HTTP and WebSocket conne
 - Click "Voice Agents" → "Create Agent" → "Use Agent Builder"
 - Design your workflow, then click "Test Agent" to do a web call
 
+## Local development
+
+Start the stack with the local-only overrides:
+
+    docker compose \
+      -f docker-compose.yaml \
+      -f docker-compose.override.yaml \
+      -f docker-compose.local.yaml \
+      up -d --build
+
+Do NOT add local-only settings (source bind mounts, relaxed users, debug ports)
+to docker-compose.override.yaml - that file is part of the production deploy.
+Put them in docker-compose.local.yaml instead.
+
 ## Common Commands
 
 | Action | Command |
