@@ -284,8 +284,13 @@ export function ServiceConfigurationForm({
                     ? realtimeSchemas
                     : defaultsData[service as "llm" | "tts" | "stt" | "embeddings"] as Record<string, ProviderSchema> | undefined;
 
-                if (src?.provider) {
-                    Object.entries(src).forEach(([field, value]) => {
+                const providerInSrc = src?.provider as string | undefined;
+                const hasValidProvider = Boolean(
+                    providerInSrc && schemaSource && schemaSource[providerInSrc]
+                );
+
+                if (hasValidProvider) {
+                    Object.entries(src!).forEach(([field, value]) => {
                         if (field === "api_key") {
                             if (mode === 'override') {
                                 // In override mode, only load API keys from the override itself
@@ -311,7 +316,7 @@ export function ServiceConfigurationForm({
                             defaultValues[`${service}_${field}`] = value as string | number | boolean;
                         }
                     });
-                    selectedProviders[service] = src.provider as string;
+                    selectedProviders[service] = providerInSrc!;
                     const properties = schemaSource?.[selectedProviders[service]]?.properties as Record<string, SchemaProperty>;
                     if (properties) {
                         Object.entries(properties).forEach(([field, schema]) => {
@@ -322,7 +327,8 @@ export function ServiceConfigurationForm({
                         });
                     }
                 } else {
-                    const properties = schemaSource?.[selectedProviders[service]]?.properties as Record<string, SchemaProperty>;
+                    const fallbackProvider = selectedProviders[service];
+                    const properties = schemaSource?.[fallbackProvider]?.properties as Record<string, SchemaProperty>;
                     if (properties) {
                         Object.entries(properties).forEach(([field, schema]) => {
                             if (field !== "provider" && schema.default !== undefined) {

@@ -33,3 +33,6 @@ node_modules/
 .superpowers/
 docs/superpowers/
 .gstack/
+scratch/
+.worktrees/
+_*.log

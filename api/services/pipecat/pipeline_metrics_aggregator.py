@@ -32,6 +32,15 @@ except ImportError:
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 
+class PipelineLLMTokenUsage(LLMTokenUsage):
+    """Subclass of LLMTokenUsage supporting optional speech-to-speech modality-split tokens."""
+
+    prompt_text_tokens: Optional[int] = None
+    prompt_audio_tokens: Optional[int] = None
+    completion_text_tokens: Optional[int] = None
+    completion_audio_tokens: Optional[int] = None
+
+
 class PipelineMetricsAggregator(FrameProcessor):
     def __init__(self):
         super().__init__()
@@ -94,44 +103,49 @@ class PipelineMetricsAggregator(FrameProcessor):
                 return None
             return (a or 0) + (b or 0)
 
+        new_prompt_text = getattr(new_usage, "prompt_text_tokens", None)
+        new_prompt_audio = getattr(new_usage, "prompt_audio_tokens", None)
+        new_completion_text = getattr(new_usage, "completion_text_tokens", None)
+        new_completion_audio = getattr(new_usage, "completion_audio_tokens", None)
+
         if key in self._llm_usage_metrics:
             # Aggregate with existing metrics
             existing = self._llm_usage_metrics[key]
-            aggregated = LLMTokenUsage(
+            aggregated = PipelineLLMTokenUsage(
                 prompt_tokens=existing.prompt_tokens + new_usage.prompt_tokens,
                 completion_tokens=existing.completion_tokens
                 + new_usage.completion_tokens,
                 total_tokens=existing.total_tokens + new_usage.total_tokens,
-                cache_read_input_tokens=(existing.cache_read_input_tokens or 0)
-                + (new_usage.cache_read_input_tokens or 0),
-                cache_creation_input_tokens=(existing.cache_creation_input_tokens or 0)
-                + (new_usage.cache_creation_input_tokens or 0),
+                cache_read_input_tokens=(getattr(existing, "cache_read_input_tokens", 0) or 0)
+                + (getattr(new_usage, "cache_read_input_tokens", 0) or 0),
+                cache_creation_input_tokens=(getattr(existing, "cache_creation_input_tokens", 0) or 0)
+                + (getattr(new_usage, "cache_creation_input_tokens", 0) or 0),
                 prompt_text_tokens=_sum_optional(
-                    existing.prompt_text_tokens, new_usage.prompt_text_tokens
+                    getattr(existing, "prompt_text_tokens", None), new_prompt_text
                 ),
                 prompt_audio_tokens=_sum_optional(
-                    existing.prompt_audio_tokens, new_usage.prompt_audio_tokens
+                    getattr(existing, "prompt_audio_tokens", None), new_prompt_audio
                 ),
                 completion_text_tokens=_sum_optional(
-                    existing.completion_text_tokens, new_usage.completion_text_tokens
+                    getattr(existing, "completion_text_tokens", None), new_completion_text
                 ),
                 completion_audio_tokens=_sum_optional(
-                    existing.completion_audio_tokens, new_usage.completion_audio_tokens
+                    getattr(existing, "completion_audio_tokens", None), new_completion_audio
                 ),
             )
             self._llm_usage_metrics[key] = aggregated
         else:
             # First occurrence for this processor+model combination
-            self._llm_usage_metrics[key] = LLMTokenUsage(
+            self._llm_usage_metrics[key] = PipelineLLMTokenUsage(
                 prompt_tokens=new_usage.prompt_tokens,
                 completion_tokens=new_usage.completion_tokens,
                 total_tokens=new_usage.total_tokens,
-                cache_read_input_tokens=new_usage.cache_read_input_tokens,
-                cache_creation_input_tokens=new_usage.cache_creation_input_tokens,
-                prompt_text_tokens=new_usage.prompt_text_tokens,
-                prompt_audio_tokens=new_usage.prompt_audio_tokens,
-                completion_text_tokens=new_usage.completion_text_tokens,
-                completion_audio_tokens=new_usage.completion_audio_tokens,
+                cache_read_input_tokens=getattr(new_usage, "cache_read_input_tokens", None),
+                cache_creation_input_tokens=getattr(new_usage, "cache_creation_input_tokens", None),
+                prompt_text_tokens=new_prompt_text,
+                prompt_audio_tokens=new_prompt_audio,
+                completion_text_tokens=new_completion_text,
+                completion_audio_tokens=new_completion_audio,
             )
 
         logger.debug(f"LLM usage metrics: {self._llm_usage_metrics}")
@@ -188,14 +202,14 @@ class PipelineMetricsAggregator(FrameProcessor):
                 "prompt_tokens": usage.prompt_tokens,
                 "completion_tokens": usage.completion_tokens,
                 "total_tokens": usage.total_tokens,
-                "cache_read_input_tokens": usage.cache_read_input_tokens,
-                "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+                "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", None),
+                "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", None),
                 # Per-modality split for speech-to-speech billing (None when the
                 # model didn't report it — i.e. an ordinary text LLM).
-                "prompt_text_tokens": usage.prompt_text_tokens,
-                "prompt_audio_tokens": usage.prompt_audio_tokens,
-                "completion_text_tokens": usage.completion_text_tokens,
-                "completion_audio_tokens": usage.completion_audio_tokens,
+                "prompt_text_tokens": getattr(usage, "prompt_text_tokens", None),
+                "prompt_audio_tokens": getattr(usage, "prompt_audio_tokens", None),
+                "completion_text_tokens": getattr(usage, "completion_text_tokens", None),
+                "completion_audio_tokens": getattr(usage, "completion_audio_tokens", None),
             }
 
         return {
