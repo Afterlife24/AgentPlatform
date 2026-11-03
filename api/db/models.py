@@ -1689,6 +1689,20 @@ class OrganizationCreditAccountModel(Base):
         comment="If true, prevent new workflow runs",
     )
 
+    # Balance alert emails. Set when the alert is sent; cleared (re-armed) once
+    # the balance rises back above the alert level, so each alert fires once
+    # per drop rather than on every debit.
+    low_balance_alert_sent_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="When the low-balance warning email was sent. NULL = armed",
+    )
+    exhausted_alert_sent_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="When the balance-exhausted email was sent. NULL = armed",
+    )
+
     # Audit timestamps
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at = Column(

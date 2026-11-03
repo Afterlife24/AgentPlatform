@@ -36,6 +36,25 @@ services:
   nginx:
     restart: unless-stopped
 
+  # Local mail catcher for OTP and wallet-alert emails. Captures mail instead of
+  # delivering it; read it at http://localhost:8025. Opt-in via profile so it
+  # never runs on a real deployment:
+  #   docker compose --profile local-mail up -d mailpit
+  # Pair with SMTP_HOST=mailpit, SMTP_PORT=1025, SMTP_DISABLE_TLS=true in .env.
+  mailpit:
+    image: axllent/mailpit:v1.27
+    container_name: mailpit
+    profiles: ["local-mail"]
+    restart: unless-stopped
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    networks:
+      - app-network
+
   nginx-local:
     image: nginx:alpine
     container_name: nginx_local
@@ -82,6 +101,7 @@ services:
       SMTP_PORT: "${SMTP_PORT:-587}"
       SMTP_FROM_EMAIL: "${SMTP_FROM_EMAIL}"
       SMTP_PASSWORD: "${SMTP_PASSWORD}"
+      SMTP_DISABLE_TLS: "${SMTP_DISABLE_TLS:-false}"
       # Shared secret for the internal credits API. Without it, every
       # /internal/credits route returns 503 ("Internal API is not configured").
       DOGRAH_INTERNAL_SECRET: "${DOGRAH_INTERNAL_SECRET:-}"
@@ -105,6 +125,10 @@ services:
       ENFORCE_CREDIT_BALANCE: "${ENFORCE_CREDIT_BALANCE:-false}"
       # Balance at or below which a run is refused when enforcement is on.
       MINIMUM_WALLET_BALANCE_USD: "${MINIMUM_WALLET_BALANCE_USD:-0.00}"
+      # Balance (USD) at or below which the owner gets a low-balance email.
+      LOW_BALANCE_ALERT_USD: "${LOW_BALANCE_ALERT_USD:-2.00}"
+      # Public UI address, used for the "top up" link in balance alert emails.
+      UI_APP_URL: "${UI_APP_URL:-${PUBLIC_BASE_URL:-http://localhost:3010}}"
     # Mount the local startup script and use it as the entrypoint
     # (adds --proxy-headers to uvicorn for Twilio signature validation behind nginx)
     volumes:
@@ -124,6 +148,10 @@ services:
       SMTP_PORT: "${SMTP_PORT:-587}"
       SMTP_FROM_EMAIL: "${SMTP_FROM_EMAIL}"
       SMTP_PASSWORD: "${SMTP_PASSWORD}"
+      SMTP_DISABLE_TLS: "${SMTP_DISABLE_TLS:-false}"
+      # Call billing runs in the worker, so it sends the balance alert emails.
+      LOW_BALANCE_ALERT_USD: "${LOW_BALANCE_ALERT_USD:-2.00}"
+      UI_APP_URL: "${UI_APP_URL:-${PUBLIC_BASE_URL:-http://localhost:3010}}"
       # Same as api: skip runtime Cloudflare-tunnel discovery for local dev;
       # PUBLIC_BASE_URL wins in production.
       BACKEND_API_ENDPOINT: "${BACKEND_API_ENDPOINT:-${PUBLIC_BASE_URL:-http://host.docker.internal:3000}}"

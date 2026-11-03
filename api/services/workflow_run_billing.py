@@ -35,6 +35,7 @@ from api.enums import CreditLedgerEntryType, PostHogEvent, WorkflowRunMode
 from api.services.managed_model_services import get_mps_correlation_id
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.posthog_client import capture_event
+from api.services.wallet_balance_alerts import check_wallet_balance_alerts
 
 # Fallback pricing per 1M tokens (USD), used ONLY when a model has no active
 # pricing row in the DB (e.g. pricing not yet synced/approved). Keeping a
@@ -684,6 +685,10 @@ async def _report_oss_platform_usage(workflow_run) -> None:
             e,
         )
         return
+
+    # Email the account owner if this debit took the wallet low or empty.
+    # Never raises.
+    await check_wallet_balance_alerts(organization_id)
 
     # Immutable per-run audit: which models, what usage, which rate version,
     # final charge. Never let an audit failure undo the debit above.
