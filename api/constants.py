@@ -204,6 +204,8 @@ SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "afterlife668@gmail.com")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+# Skip STARTTLS for local mail catchers like Mailpit that don't offer TLS.
+SMTP_DISABLE_TLS = os.getenv("SMTP_DISABLE_TLS", "false").lower() == "true"
 
 TUNER_BASE_URL = os.getenv("TUNER_BASE_URL", "https://api.usetuner.ai")
 
@@ -220,3 +222,7 @@ from decimal import Decimal
 MINIMUM_WALLET_BALANCE_USD = Decimal(
     os.getenv("MINIMUM_WALLET_BALANCE_USD", "0.00")
 )
+# Wallet balance alert emails sent to the account owner.
+# Low-balance warning fires when the balance drops to or below this USD level;
+# the balance-exhausted email fires at $0 or below.
+LOW_BALANCE_ALERT_USD = Decimal(os.getenv("LOW_BALANCE_ALERT_USD", "2.00"))

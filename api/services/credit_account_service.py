@@ -11,6 +11,7 @@ from loguru import logger
 
 from api.db import db_client
 from api.enums import CreditLedgerEntryType
+from api.services.wallet_balance_alerts import check_wallet_balance_alerts
 from api.utils.api_key import hash_api_key
 
 
@@ -451,6 +452,10 @@ async def grant_credits(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
         ) from e
 
+    # A top-up re-arms the low/exhausted alerts once the balance is back
+    # above their level. Never raises.
+    await check_wallet_balance_alerts(organization_id)
+
     return {
         "organization_id": organization_id,
         "credited_usd": entry.amount_usd,
@@ -507,6 +512,10 @@ async def adjust_credits(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
         ) from e
+
+    # Adjustments can move the balance either way: send a due alert or re-arm.
+    # Never raises.
+    await check_wallet_balance_alerts(organization_id)
 
     return {
         "organization_id": organization_id,

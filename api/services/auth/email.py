@@ -6,7 +6,13 @@ from email.mime.text import MIMEText
 
 from loguru import logger
 
-from api.constants import SMTP_FROM_EMAIL, SMTP_HOST, SMTP_PASSWORD, SMTP_PORT
+from api.constants import (
+    SMTP_DISABLE_TLS,
+    SMTP_FROM_EMAIL,
+    SMTP_HOST,
+    SMTP_PASSWORD,
+    SMTP_PORT,
+)
 
 
 async def send_otp_email(to_email: str, otp: str, purpose: str) -> None:
@@ -41,6 +47,26 @@ async def send_otp_email(to_email: str, otp: str, purpose: str) -> None:
         </div>
         """
 
+    try:
+        await send_email(to_email, subject, body_text, body_html)
+        logger.info(f"OTP email sent to {to_email} (purpose={purpose})")
+    except Exception as e:
+        logger.error(f"Failed to send OTP email to {to_email}: {e}")
+        raise
+
+
+def is_email_configured() -> bool:
+    """True when SMTP credentials are set, so sending can actually work."""
+    return bool(SMTP_FROM_EMAIL and SMTP_PASSWORD)
+
+
+async def send_email(
+    to_email: str, subject: str, body_text: str, body_html: str
+) -> None:
+    """Send a plain-text + HTML email through the configured SMTP server.
+
+    Raises on failure; callers decide whether that is fatal.
+    """
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = SMTP_FROM_EMAIL
@@ -48,17 +74,12 @@ async def send_otp_email(to_email: str, otp: str, purpose: str) -> None:
     msg.attach(MIMEText(body_text, "plain"))
     msg.attach(MIMEText(body_html, "html"))
 
-    try:
-        await aiosmtplib.send(
-            msg,
-            hostname=SMTP_HOST,
-            port=SMTP_PORT,
-            username=SMTP_FROM_EMAIL,
-            password=SMTP_PASSWORD,
-            use_tls=False,
-            start_tls=True,
-        )
-        logger.info(f"OTP email sent to {to_email} (purpose={purpose})")
-    except Exception as e:
-        logger.error(f"Failed to send OTP email to {to_email}: {e}")
-        raise
+    await aiosmtplib.send(
+        msg,
+        hostname=SMTP_HOST,
+        port=SMTP_PORT,
+        username=SMTP_FROM_EMAIL,
+        password=SMTP_PASSWORD,
+        use_tls=False,
+        start_tls=not SMTP_DISABLE_TLS,
+    )

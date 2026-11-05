@@ -223,6 +223,103 @@ class CreditAccountClient(BaseDBClient):
 
             return ledger_entry, False
 
+    async def claim_balance_alerts(
+        self, organization_id: int, low_balance_level_usd: Decimal
+    ) -> tuple[list[str], Optional[OrganizationCreditAccountModel]]:
+        """Decide which balance alert emails are due and mark them as sent.
+
+        Runs under a row lock so concurrent debits on different workers can
+        never claim the same alert twice. In one transaction it:
+        1. Re-arms alerts whose level the balance has risen back above
+           (balance > low level clears the low flag, balance > 0 clears the
+           exhausted flag), e.g. after a top-up.
+        2. Claims at most one alert that is due and still armed:
+           - "exhausted" when balance <= 0 (also marks "low" as sent so a later
+             debit doesn't send a stale low warning after the exhausted one)
+           - otherwise "low" when balance <= low_balance_level_usd
+
+        Args:
+            organization_id: Organization owning the account
+            low_balance_level_usd: Balance (USD) at or below which the low
+                warning fires
+
+        Returns:
+            Tuple of (claimed alert kinds, account snapshot). The list is empty
+            when nothing is due. Account is None when no account exists.
+        """
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(OrganizationCreditAccountModel)
+                .where(
+                    OrganizationCreditAccountModel.organization_id == organization_id
+                )
+                .with_for_update()
+            )
+            account = result.scalars().first()
+            if not account:
+                return [], None
+
+            balance = account.balance_usd
+            now = datetime.now(UTC)
+            changed = False
+            claimed: list[str] = []
+
+            # Re-arm alerts once the balance is back above their level.
+            if balance > low_balance_level_usd and account.low_balance_alert_sent_at:
+                account.low_balance_alert_sent_at = None
+                changed = True
+            if balance > 0 and account.exhausted_alert_sent_at:
+                account.exhausted_alert_sent_at = None
+                changed = True
+
+            if balance <= 0:
+                if account.exhausted_alert_sent_at is None:
+                    account.exhausted_alert_sent_at = now
+                    claimed.append("exhausted")
+                    changed = True
+                if account.low_balance_alert_sent_at is None:
+                    account.low_balance_alert_sent_at = now
+                    changed = True
+            elif balance <= low_balance_level_usd:
+                if account.low_balance_alert_sent_at is None:
+                    account.low_balance_alert_sent_at = now
+                    claimed.append("low")
+                    changed = True
+
+            if changed:
+                await session.commit()
+                await session.refresh(account)
+
+            return claimed, account
+
+    async def release_balance_alert(self, organization_id: int, kind: str) -> None:
+        """Re-arm a claimed alert (used when sending the email failed).
+
+        Args:
+            organization_id: Organization owning the account
+            kind: "low" or "exhausted"
+        """
+        column = {
+            "low": "low_balance_alert_sent_at",
+            "exhausted": "exhausted_alert_sent_at",
+        }.get(kind)
+        if column is None:
+            raise ValueError(f"Unknown balance alert kind: {kind}")
+
+        async with self.async_session() as session:
+            result = await session.execute(
+                select(OrganizationCreditAccountModel)
+                .where(
+                    OrganizationCreditAccountModel.organization_id == organization_id
+                )
+                .with_for_update()
+            )
+            account = result.scalars().first()
+            if not account:
+                return
+            setattr(account, column, None)
+            await session.commit()
+
     async def get_ledger_count(self, organization_id: int) -> int:
         """Count total ledger entries for an organization (for pagination)."""
         from sqlalchemy import func

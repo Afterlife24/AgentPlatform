@@ -22,6 +22,7 @@ from api.services.gen_ai import build_embedding_service
 from api.services.mps_service_key_client import mps_service_key_client
 from api.services.posthog_client import capture_event
 from api.services.storage import storage_fs
+from api.services.wallet_balance_alerts import check_wallet_balance_alerts
 from api.services.workflow.tools.chunk_contextualiser import contextualise_chunks
 from api.services.workflow.tools.csv_table import (
     build_value_profile_from_rows,
@@ -460,6 +461,9 @@ async def process_knowledge_base_document(
                 tokens_charged=total_embed_tokens,
                 memo=f"Knowledge base ingestion: document {document_id}",
             )
+            # Email the owner if this debit took the wallet low or empty.
+            # Never raises.
+            await check_wallet_balance_alerts(organization_id)
 
         # Fire PostHog event so ingestion token usage is visible in analytics.
         # Uses created_by_provider_id as the distinct_id (same pattern as
